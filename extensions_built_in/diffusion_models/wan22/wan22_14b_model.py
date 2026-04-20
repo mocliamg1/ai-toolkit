@@ -276,26 +276,92 @@ class Wan2214bModel(Wan21):
         )
 
     @staticmethod
-    def _add_stage_prefix_to_wan22_lora_key(key: str, stage_name: str) -> str:
+    def _is_stage_qualified_base_weight_key(key: str) -> bool:
+        return Wan2214bModel._is_wan22_stage_qualified_lora_key(key)
+
+    @staticmethod
+    def _is_kohya_lora_key(key: str) -> bool:
+        return key.startswith("lora_unet_")
+
+    @staticmethod
+    def _is_peft_lora_key(key: str) -> bool:
+        return (
+            key.startswith("transformer.")
+            or key.startswith("unet.")
+            or ".lora_A." in key
+            or ".lora_B." in key
+            or ".lora_down." in key
+            or ".lora_up." in key
+        )
+
+    @staticmethod
+    def _is_lycoris_lora_key(key: str) -> bool:
+        return key.startswith("lycoris_") or key.startswith("lycoris_transformer_")
+
+    @staticmethod
+    def _supports_wan22_base_lora_key_format(key: str) -> bool:
+        return (
+            Wan2214bModel._is_stage_qualified_base_weight_key(key)
+            or key.startswith("diffusion_model.")
+            or Wan2214bModel._is_kohya_lora_key(key)
+            or Wan2214bModel._is_peft_lora_key(key)
+            or Wan2214bModel._is_lycoris_lora_key(key)
+            or key.startswith("lora_transformer_")
+        )
+
+    @classmethod
+    def _get_wan22_unsupported_key_error(cls, key: str) -> ValueError:
+        return ValueError(
+            "Wan2.2 base merge supports combined stage-qualified Wan2.2 LoRAs, "
+            "`_high_noise` / `_low_noise`, `_high` / `_low`, plain single-stage Wan LoRAs when the "
+            "target stage can be inferred, and Kohya-style `lora_unet_*` Wan LoRAs. "
+            f"Unsupported key format: {key}"
+        )
+
+    @classmethod
+    def _validate_wan22_base_lora_state_dict(cls, state_dict: Dict[str, torch.Tensor]):
+        for key in state_dict.keys():
+            if not cls._supports_wan22_base_lora_key_format(key):
+                raise cls._get_wan22_unsupported_key_error(key)
+
+    @staticmethod
+    def _insert_stage_into_dotted_lora_key(key: str, stage_name: str) -> str:
+        if "." not in key:
+            raise ValueError(f"Cannot stage dotted LoRA key without module path: {key}")
+        root, remainder = key.split(".", 1)
+        return f"{root}.{stage_name}.{remainder}"
+
+    @classmethod
+    def _add_stage_prefix_to_wan22_lora_key(cls, key: str, stage_name: str) -> str:
         if Wan2214bModel._is_wan22_stage_qualified_lora_key(key):
             return key
 
+        if cls._is_kohya_lora_key(key):
+            return key.replace("lora_unet_", f"lora_unet_{stage_name}_", 1)
+
+        if cls._is_peft_lora_key(key):
+            if key.startswith("transformer."):
+                return key.replace("transformer.", f"transformer.{stage_name}.", 1)
+            if key.startswith("unet."):
+                return key.replace("unet.", f"unet.{stage_name}.", 1)
+            return cls._insert_stage_into_dotted_lora_key(key, stage_name)
+
+        if cls._is_lycoris_lora_key(key):
+            if key.startswith("lycoris_transformer_"):
+                return key.replace("lycoris_transformer_", f"lycoris_{stage_name}_", 1)
+            if key.startswith("lycoris_"):
+                return key.replace("lycoris_", f"lycoris_{stage_name}_", 1)
+
         prefix_map = [
             ("diffusion_model.", f"diffusion_model.{stage_name}."),
-            ("transformer.", f"transformer.{stage_name}."),
             ("lycoris_diffusion_model.", f"lycoris_diffusion_model.{stage_name}."),
-            ("lycoris_transformer.", f"lycoris_transformer.{stage_name}."),
             ("lora_transformer_", f"lora_transformer_{stage_name}_"),
-            ("lycoris_transformer_", f"lycoris_{stage_name}_"),
         ]
         for prefix, replacement in prefix_map:
             if key.startswith(prefix):
                 return key.replace(prefix, replacement, 1)
 
-        raise ValueError(
-            "Wan2.2 base merge only supports combined Wan2.2 LoRAs or `_high_noise` / `_low_noise` "
-            f"pairs. Unsupported key format: {key}"
-        )
+        raise cls._get_wan22_unsupported_key_error(key)
 
     def _stage_wan22_lora_state_dict(
         self, state_dict: Dict[str, torch.Tensor], stage_name: str
@@ -345,15 +411,15 @@ class Wan2214bModel(Wan21):
             resolved_lora_path = self._resolve_wan22_base_lora_path(lora_path)
             self.model_config.lora_path = resolved_lora_path
             state_dict = load_file(resolved_lora_path)
+            self._validate_wan22_base_lora_state_dict(state_dict)
             if not any(self._is_wan22_stage_qualified_lora_key(key) for key in state_dict):
                 stage_name = self._infer_single_stage_name_for_wan22_base_lora(resolved_lora_path)
                 if stage_name is not None:
                     return self._stage_wan22_lora_state_dict(state_dict, stage_name)
                 raise ValueError(
-                    "Wan2.2 base merge only supports combined Wan2.2 LoRAs with stage-qualified keys, "
-                    "`_high_noise` / `_low_noise` LoRA pairs, or a plain single-stage Wan2.2 LoRA when "
-                    "the target stage can be inferred from the filename or the current train_high_noise / "
-                    "train_low_noise config."
+                    "Wan2.2 base merge found a valid single-stage LoRA, but the target stage could not be "
+                    "inferred. Use a filename ending in `_high_noise`, `_low_noise`, `_high`, or `_low`, "
+                    "or set only one of `train_high_noise` / `train_low_noise`."
                 )
             return OrderedDict(state_dict)
 
@@ -363,11 +429,13 @@ class Wan2214bModel(Wan21):
         combined_state_dict = OrderedDict()
         if high_noise_path is not None:
             high_noise_lora = load_file(high_noise_path)
+            self._validate_wan22_base_lora_state_dict(high_noise_lora)
             combined_state_dict.update(
                 self._stage_wan22_lora_state_dict(high_noise_lora, "transformer_1")
             )
         if low_noise_path is not None:
             low_noise_lora = load_file(low_noise_path)
+            self._validate_wan22_base_lora_state_dict(low_noise_lora)
             combined_state_dict.update(
                 self._stage_wan22_lora_state_dict(low_noise_lora, "transformer_2")
             )
