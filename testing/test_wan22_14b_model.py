@@ -205,6 +205,54 @@ def test_explicit_low_stage_rejects_high_stage_weights(monkeypatch):
         model._load_wan22_base_lora_state_dict("unused.safetensors")
 
 
+def test_explicit_base_merge_entrypoint_runs_without_legacy_lora_path(monkeypatch):
+    model = _make_model(high_noise_lora_path="high.safetensors")
+    model.print_and_status_update = lambda *args, **kwargs: None
+
+    calls = {}
+
+    def fake_load_state_dict(lora_path):
+        calls["lora_path"] = lora_path
+        return _tensor_dict(PLAIN_LORA_KEY)
+
+    def fake_infer_network_config(state_dict):
+        calls["state_dict_keys"] = list(state_dict.keys())
+        return SimpleNamespace(
+            linear=4,
+            linear_alpha=4,
+            conv=None,
+            conv_alpha=None,
+            type="lora",
+            network_kwargs={},
+            transformer_only=False,
+        )
+
+    class FakeNetwork:
+        def __init__(self, **kwargs):
+            calls["network_kwargs"] = kwargs
+
+        def apply_to(self, *args, **kwargs):
+            calls["apply_to"] = (args, kwargs)
+
+        def load_weights(self, state_dict):
+            calls["loaded_weights"] = list(state_dict.keys())
+
+        def merge_in(self, multiplier):
+            calls["merge_in"] = multiplier
+
+    monkeypatch.setattr(model, "_load_wan22_base_lora_state_dict", fake_load_state_dict)
+    monkeypatch.setattr(model, "_infer_wan22_base_lora_network_config", fake_infer_network_config)
+    monkeypatch.setattr(wan22_module, "LoRASpecialNetwork", FakeNetwork)
+    monkeypatch.setattr(wan22_module, "flush", lambda: None)
+
+    model._merge_base_lora_into_wan22_transformer(object())
+
+    assert calls["lora_path"] == ""
+    assert calls["state_dict_keys"] == [PLAIN_LORA_KEY]
+    assert calls["loaded_weights"] == [PLAIN_LORA_KEY]
+    assert calls["merge_in"] == 1.0
+
+
 def test_explicit_stage_rejects_combined_stage_qualified_weights(monkeypatch):
     model = _make_model(high_noise_lora_path="high.safetensors")
 

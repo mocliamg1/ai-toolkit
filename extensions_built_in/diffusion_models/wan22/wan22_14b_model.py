@@ -594,11 +594,14 @@ class Wan2214bModel(Wan21):
     def _merge_base_lora_into_wan22_transformer(
         self, transformer: DualWanTransformer3DModel
     ):
-        if self.model_config.lora_path is None:
+        if (
+            self.model_config.lora_path is None
+            and not self._has_explicit_wan22_base_lora_paths()
+        ):
             return
 
         self.print_and_status_update("Loading Wan2.2 base merge LoRA")
-        lora_state_dict = self._load_wan22_base_lora_state_dict(self.model_config.lora_path)
+        lora_state_dict = self._load_wan22_base_lora_state_dict(self.model_config.lora_path or "")
         network_config = self._infer_wan22_base_lora_network_config(lora_state_dict)
 
         self.print_and_status_update("Merging Wan2.2 base LoRA into transformers")
