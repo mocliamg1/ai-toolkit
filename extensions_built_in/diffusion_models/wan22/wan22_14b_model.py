@@ -268,7 +268,12 @@ class Wan2214bModel(Wan21):
 
     @staticmethod
     def _is_wan22_stage_qualified_lora_key(key: str) -> bool:
-        return ".transformer_1." in key or ".transformer_2." in key
+        return (
+            ".transformer_1." in key
+            or ".transformer_2." in key
+            or "_transformer_1_" in key
+            or "_transformer_2_" in key
+        )
 
     @staticmethod
     def _add_stage_prefix_to_wan22_lora_key(key: str, stage_name: str) -> str:
@@ -280,6 +285,8 @@ class Wan2214bModel(Wan21):
             ("transformer.", f"transformer.{stage_name}."),
             ("lycoris_diffusion_model.", f"lycoris_diffusion_model.{stage_name}."),
             ("lycoris_transformer.", f"lycoris_transformer.{stage_name}."),
+            ("lora_transformer_", f"lora_transformer_{stage_name}_"),
+            ("lycoris_transformer_", f"lycoris_{stage_name}_"),
         ]
         for prefix, replacement in prefix_map:
             if key.startswith(prefix):
@@ -298,28 +305,58 @@ class Wan2214bModel(Wan21):
             staged_state_dict[self._add_stage_prefix_to_wan22_lora_key(key, stage_name)] = value
         return staged_state_dict
 
+    @staticmethod
+    def _is_wan22_high_stage_file(path: str) -> bool:
+        lower_path = path.lower()
+        return lower_path.endswith("_high_noise.safetensors") or lower_path.endswith("_high.safetensors")
+
+    @staticmethod
+    def _is_wan22_low_stage_file(path: str) -> bool:
+        lower_path = path.lower()
+        return lower_path.endswith("_low_noise.safetensors") or lower_path.endswith("_low.safetensors")
+
+    @classmethod
+    def _get_wan22_split_lora_specs(cls, path: str) -> tuple[bool, str, str]:
+        if cls._is_wan22_high_stage_file(path):
+            if path.lower().endswith("_high_noise.safetensors"):
+                return True, path, path[: -len("_high_noise.safetensors")] + "_low_noise.safetensors"
+            return True, path, path[: -len("_high.safetensors")] + "_low.safetensors"
+        if cls._is_wan22_low_stage_file(path):
+            if path.lower().endswith("_low_noise.safetensors"):
+                return True, path[: -len("_low_noise.safetensors")] + "_high_noise.safetensors", path
+            return True, path[: -len("_low.safetensors")] + "_high.safetensors", path
+        return False, path, path
+
+    def _infer_single_stage_name_for_wan22_base_lora(self, lora_path: str) -> Optional[str]:
+        lower_path = lora_path.lower()
+        if "high_noise" in lower_path or lower_path.endswith("_high.safetensors"):
+            return "transformer_1"
+        if "low_noise" in lower_path or lower_path.endswith("_low.safetensors"):
+            return "transformer_2"
+        if self.train_high_noise and not self.train_low_noise:
+            return "transformer_1"
+        if self.train_low_noise and not self.train_high_noise:
+            return "transformer_2"
+        return None
+
     def _load_wan22_base_lora_state_dict(self, lora_path: str) -> OrderedDict:
-        is_split_lora = (
-            lora_path.endswith("_high_noise.safetensors")
-            or lora_path.endswith("_low_noise.safetensors")
-        )
+        is_split_lora, high_noise_spec, low_noise_spec = self._get_wan22_split_lora_specs(lora_path)
         if not is_split_lora:
             resolved_lora_path = self._resolve_wan22_base_lora_path(lora_path)
             self.model_config.lora_path = resolved_lora_path
             state_dict = load_file(resolved_lora_path)
             if not any(self._is_wan22_stage_qualified_lora_key(key) for key in state_dict):
+                stage_name = self._infer_single_stage_name_for_wan22_base_lora(resolved_lora_path)
+                if stage_name is not None:
+                    return self._stage_wan22_lora_state_dict(state_dict, stage_name)
                 raise ValueError(
-                    "Wan2.2 base merge only supports combined Wan2.2 LoRAs with stage-qualified keys "
-                    "or `_high_noise` / `_low_noise` LoRA pairs."
+                    "Wan2.2 base merge only supports combined Wan2.2 LoRAs with stage-qualified keys, "
+                    "`_high_noise` / `_low_noise` LoRA pairs, or a plain single-stage Wan2.2 LoRA when "
+                    "the target stage can be inferred from the filename or the current train_high_noise / "
+                    "train_low_noise config."
                 )
             return OrderedDict(state_dict)
 
-        high_noise_spec = lora_path.replace(
-            "_low_noise.safetensors", "_high_noise.safetensors"
-        )
-        low_noise_spec = lora_path.replace(
-            "_high_noise.safetensors", "_low_noise.safetensors"
-        )
         high_noise_path = self._resolve_optional_wan22_base_lora_path(high_noise_spec)
         low_noise_path = self._resolve_optional_wan22_base_lora_path(low_noise_spec)
 
@@ -687,21 +724,11 @@ class Wan2214bModel(Wan21):
 
     def load_lora(self, file: str):
         # if it doesnt have high_noise or low_noise, it is a combo LoRA
-        if (
-            "_high_noise.safetensors" not in file
-            and "_low_noise.safetensors" not in file
-        ):
+        is_split_lora, high_noise_lora_path, low_noise_lora_path = self._get_wan22_split_lora_specs(file)
+        if not is_split_lora:
             # this is a combined LoRA, we dont need to split it up
             sd = load_file(file)
             return sd
-
-        # we may have been passed the high_noise or the low_noise LoRA path, but we need to load both
-        high_noise_lora_path = file.replace(
-            "_low_noise.safetensors", "_high_noise.safetensors"
-        )
-        low_noise_lora_path = file.replace(
-            "_high_noise.safetensors", "_low_noise.safetensors"
-        )
 
         combined_dict = {}
 
