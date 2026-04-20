@@ -328,10 +328,10 @@ class Wan2214bModel(Wan21):
         return False, path, path
 
     def _infer_single_stage_name_for_wan22_base_lora(self, lora_path: str) -> Optional[str]:
-        lower_path = lora_path.lower()
-        if "high_noise" in lower_path or lower_path.endswith("_high.safetensors"):
+        filename = os.path.basename(lora_path)
+        if self._is_wan22_high_stage_file(filename):
             return "transformer_1"
-        if "low_noise" in lower_path or lower_path.endswith("_low.safetensors"):
+        if self._is_wan22_low_stage_file(filename):
             return "transformer_2"
         if self.train_high_noise and not self.train_low_noise:
             return "transformer_1"
