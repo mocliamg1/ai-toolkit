@@ -1,10 +1,99 @@
+def _split_kohya_suffix(key):
+    for suffix in (
+        ".alpha",
+        ".lora_down.weight",
+        ".lora_up.weight",
+        ".lora_A.weight",
+        ".lora_B.weight",
+    ):
+        if key.endswith(suffix):
+            return key[: -len(suffix)], suffix
+    return key, ""
+
+
+def _convert_kohya_wan_key_to_original(key):
+    if not key.startswith("lora_unet_"):
+        return key
+
+    module_key, suffix = _split_kohya_suffix(key)
+    module_key = module_key[len("lora_unet_") :]
+
+    stage_name = None
+    for candidate in ("transformer_1_", "transformer_2_"):
+        if module_key.startswith(candidate):
+            stage_name = candidate[:-1]
+            module_key = module_key[len(candidate) :]
+            break
+
+    if not module_key.startswith("blocks_"):
+        return key
+
+    parts = module_key.split("_")
+    if len(parts) < 4:
+        return key
+
+    _, block_idx, *remainder = parts
+    remainder_key = "_".join(remainder)
+
+    if remainder_key.startswith("ffn_"):
+        if remainder_key == "ffn_0":
+            target = f"blocks.{block_idx}.ffn.0"
+        elif remainder_key == "ffn_2":
+            target = f"blocks.{block_idx}.ffn.2"
+        else:
+            return key
+    else:
+        attn_prefix_map = {
+            "self_attn_": "self_attn",
+            "cross_attn_": "cross_attn",
+            "attn1_": "self_attn",
+            "attn2_": "cross_attn",
+        }
+        attention_name = None
+        projection_key = None
+        for prefix, mapped_name in attn_prefix_map.items():
+            if remainder_key.startswith(prefix):
+                attention_name = mapped_name
+                projection_key = remainder_key[len(prefix) :]
+                break
+
+        if attention_name is None or projection_key is None:
+            return key
+
+        projection_map = {
+            "q": "q",
+            "k": "k",
+            "v": "v",
+            "o": "o",
+            "to_q": "q",
+            "to_k": "k",
+            "to_v": "v",
+            "to_out": "o",
+            "to_out_0": "o",
+            "k_img": "k_img",
+            "v_img": "v_img",
+            "add_k_proj": "k_img",
+            "add_v_proj": "v_img",
+        }
+        projection_name = projection_map.get(projection_key)
+        if projection_name is None:
+            return key
+
+        target = f"blocks.{block_idx}.{attention_name}.{projection_name}"
+
+    prefix = "diffusion_model."
+    if stage_name is not None:
+        prefix += f"{stage_name}."
+    return f"{prefix}{target}{suffix}"
+
+
 def convert_to_diffusers(state_dict):
     new_state_dict = {}
     for key in state_dict:
-        new_key = key
+        new_key = _convert_kohya_wan_key_to_original(key)
         # Base model name change
-        if key.startswith("diffusion_model."):
-            new_key = key.replace("diffusion_model.", "transformer.")
+        if new_key.startswith("diffusion_model."):
+            new_key = new_key.replace("diffusion_model.", "transformer.", 1)
 
         # Attention blocks conversion
         if "self_attn" in new_key:
