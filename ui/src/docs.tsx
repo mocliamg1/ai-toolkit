@@ -59,6 +59,10 @@ const docs: { [key: string]: ConfigDoc } = {
         Wan 2.2 14B T2V and I2V can fuse a LoRA into the base model before slider training starts.
         <br />
         <br />
+        This is the legacy single-path flow. If either explicit high-noise or low-noise path is set, those explicit
+        fields take precedence and this field is ignored.
+        <br />
+        <br />
         This must point to either a combined Wan 2.2 LoRA file with stage-qualified keys or to a
         <code>_high_noise.safetensors</code> or <code>_low_noise.safetensors</code> file from a Wan 2.2 split pair.
         If you provide one side of a split pair, the trainer will look for the sibling file automatically and merge
@@ -67,6 +71,40 @@ const docs: { [key: string]: ConfigDoc } = {
         <br />
         The merge happens before quantization and layer offloading, so the fused concept becomes part of the base model
         used for training.
+      </>
+    ),
+  },
+  'config.process[0].model.high_noise_lora_path': {
+    title: 'High-Noise LoRA Path',
+    description: (
+      <>
+        Optional explicit Wan 2.2 base-merge input for the high-noise stage.
+        <br />
+        <br />
+        If this field or the low-noise field is set, the trainer switches to explicit stage mode and ignores
+        <code>config.process[0].model.lora_path</code>. Only the explicit fields are used.
+        <br />
+        <br />
+        Use this when your high-noise and low-noise stages come from different LoRA files. Unqualified single-stage
+        Wan LoRAs will be staged into <code>transformer_1</code>. Already stage-qualified keys are accepted only if
+        they already target the high-noise stage.
+      </>
+    ),
+  },
+  'config.process[0].model.low_noise_lora_path': {
+    title: 'Low-Noise LoRA Path',
+    description: (
+      <>
+        Optional explicit Wan 2.2 base-merge input for the low-noise stage.
+        <br />
+        <br />
+        If this field or the high-noise field is set, the trainer switches to explicit stage mode and ignores
+        <code>config.process[0].model.lora_path</code>. Only the explicit fields are used.
+        <br />
+        <br />
+        Use this when your high-noise and low-noise stages come from different LoRA files. Unqualified single-stage
+        Wan LoRAs will be staged into <code>transformer_2</code>. Already stage-qualified keys are accepted only if
+        they already target the low-noise stage.
       </>
     ),
   },

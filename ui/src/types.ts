@@ -169,6 +169,8 @@ export interface ModelConfig {
   layer_offloading_transformer_percent?: number;
   layer_offloading_text_encoder_percent?: number;
   lora_path?: string;
+  high_noise_lora_path?: string;
+  low_noise_lora_path?: string;
   assistant_lora_path?: string;
 }
 

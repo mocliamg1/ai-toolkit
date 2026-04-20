@@ -291,18 +291,48 @@ export default function SimpleJob({
               required
             />
             {modelArch?.additionalSections?.includes('model.lora_path') && (
-              <TextInput
-                label="Base Merge LoRA Path"
-                value={jobConfig.config.process[0].model.lora_path ?? ''}
-                docKey="config.process[0].model.lora_path"
-                onChange={(value: string | undefined) => {
-                  if (value?.trim() === '') {
-                    value = undefined;
-                  }
-                  setJobConfig(value, 'config.process[0].model.lora_path');
-                }}
-                placeholder=""
-              />
+              <>
+                <TextInput
+                  label="Base Merge LoRA Path"
+                  value={jobConfig.config.process[0].model.lora_path ?? ''}
+                  docKey="config.process[0].model.lora_path"
+                  onChange={(value: string | undefined) => {
+                    if (value?.trim() === '') {
+                      value = undefined;
+                    }
+                    setJobConfig(value, 'config.process[0].model.lora_path');
+                  }}
+                  placeholder=""
+                />
+                {modelArch?.additionalSections?.includes('model.high_noise_lora_path') && (
+                  <TextInput
+                    label="High-Noise LoRA Path"
+                    value={jobConfig.config.process[0].model.high_noise_lora_path ?? ''}
+                    docKey="config.process[0].model.high_noise_lora_path"
+                    onChange={(value: string | undefined) => {
+                      if (value?.trim() === '') {
+                        value = undefined;
+                      }
+                      setJobConfig(value, 'config.process[0].model.high_noise_lora_path');
+                    }}
+                    placeholder=""
+                  />
+                )}
+                {modelArch?.additionalSections?.includes('model.low_noise_lora_path') && (
+                  <TextInput
+                    label="Low-Noise LoRA Path"
+                    value={jobConfig.config.process[0].model.low_noise_lora_path ?? ''}
+                    docKey="config.process[0].model.low_noise_lora_path"
+                    onChange={(value: string | undefined) => {
+                      if (value?.trim() === '') {
+                        value = undefined;
+                      }
+                      setJobConfig(value, 'config.process[0].model.low_noise_lora_path');
+                    }}
+                    placeholder=""
+                  />
+                )}
+              </>
             )}
             {modelArch?.additionalSections?.includes('model.assistant_lora_path') && (
               <TextInput

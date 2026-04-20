@@ -31,6 +31,8 @@ type AdditionalSections =
   | 'model.low_vram'
   | 'model.qie.match_target_res'
   | 'model.lora_path'
+  | 'model.high_noise_lora_path'
+  | 'model.low_noise_lora_path'
   | 'model.assistant_lora_path';
 
 type ModelGroup = 'image' | 'instruction' | 'video' | 'experimental' | 'audio';
@@ -264,7 +266,15 @@ export const modelArchs: ModelArch[] = [
       ],
     },
     disableSections: ['network.conv'],
-    additionalSections: ['datasets.num_frames', 'model.low_vram', 'model.multistage', 'model.layer_offloading', 'model.lora_path'],
+    additionalSections: [
+      'datasets.num_frames',
+      'model.low_vram',
+      'model.multistage',
+      'model.layer_offloading',
+      'model.lora_path',
+      'model.high_noise_lora_path',
+      'model.low_noise_lora_path',
+    ],
     accuracyRecoveryAdapters: {
       // '3 bit with ARA': 'uint3|ostris/accuracy_recovery_adapters/wan22_14b_t2i_torchao_uint3.safetensors',
       '4 bit with ARA': 'uint4|ostris/accuracy_recovery_adapters/wan22_14b_t2i_torchao_uint4.safetensors',
@@ -302,6 +312,8 @@ export const modelArchs: ModelArch[] = [
       'model.multistage',
       'model.layer_offloading',
       'model.lora_path',
+      'model.high_noise_lora_path',
+      'model.low_noise_lora_path',
     ],
     accuracyRecoveryAdapters: {
       '4 bit with ARA': 'uint4|ostris/accuracy_recovery_adapters/wan22_14b_i2v_torchao_uint4.safetensors',

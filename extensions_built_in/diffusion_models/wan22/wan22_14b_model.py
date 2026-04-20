@@ -325,6 +325,18 @@ class Wan2214bModel(Wan21):
                 raise cls._get_wan22_unsupported_key_error(key)
 
     @staticmethod
+    def _get_wan22_stage_name_from_key(key: str) -> Optional[str]:
+        has_high_stage = ".transformer_1." in key or "_transformer_1_" in key
+        has_low_stage = ".transformer_2." in key or "_transformer_2_" in key
+        if has_high_stage and has_low_stage:
+            raise ValueError(f"Wan2.2 base merge key references multiple stages: {key}")
+        if has_high_stage:
+            return "transformer_1"
+        if has_low_stage:
+            return "transformer_2"
+        return None
+
+    @staticmethod
     def _insert_stage_into_dotted_lora_key(key: str, stage_name: str) -> str:
         if "." not in key:
             raise ValueError(f"Cannot stage dotted LoRA key without module path: {key}")
@@ -405,7 +417,67 @@ class Wan2214bModel(Wan21):
             return "transformer_2"
         return None
 
+    def _has_explicit_wan22_base_lora_paths(self) -> bool:
+        return (
+            self.model_config.high_noise_lora_path is not None
+            or self.model_config.low_noise_lora_path is not None
+        )
+
+    def _validate_wan22_explicit_stage_state_dict(
+        self, state_dict: Dict[str, torch.Tensor], stage_name: str, source_path: str
+    ):
+        self._validate_wan22_base_lora_state_dict(state_dict)
+        for key in state_dict.keys():
+            key_stage_name = self._get_wan22_stage_name_from_key(key)
+            if key_stage_name is None:
+                continue
+            if key_stage_name != stage_name:
+                raise ValueError(
+                    f"Wan2.2 explicit {stage_name} LoRA path {source_path} contains keys for "
+                    f"{key_stage_name}: {key}"
+                )
+
+    def _load_explicit_wan22_stage_lora_state_dict(
+        self, lora_path: str, stage_name: str
+    ) -> OrderedDict:
+        resolved_lora_path = self._resolve_wan22_base_lora_path(lora_path)
+        state_dict = load_file(resolved_lora_path)
+        self._validate_wan22_explicit_stage_state_dict(
+            state_dict, stage_name, resolved_lora_path
+        )
+        return self._stage_wan22_lora_state_dict(state_dict, stage_name)
+
+    def _load_explicit_wan22_base_lora_state_dict(self) -> OrderedDict:
+        combined_state_dict = OrderedDict()
+
+        high_noise_path = self.model_config.high_noise_lora_path
+        low_noise_path = self.model_config.low_noise_lora_path
+
+        if high_noise_path is not None:
+            combined_state_dict.update(
+                self._load_explicit_wan22_stage_lora_state_dict(
+                    high_noise_path, "transformer_1"
+                )
+            )
+        if low_noise_path is not None:
+            combined_state_dict.update(
+                self._load_explicit_wan22_stage_lora_state_dict(
+                    low_noise_path, "transformer_2"
+                )
+            )
+
+        if len(combined_state_dict) == 0:
+            raise ValueError(
+                "Wan2.2 explicit base merge mode requires at least one of "
+                "`high_noise_lora_path` or `low_noise_lora_path`."
+            )
+
+        return combined_state_dict
+
     def _load_wan22_base_lora_state_dict(self, lora_path: str) -> OrderedDict:
+        if self._has_explicit_wan22_base_lora_paths():
+            return self._load_explicit_wan22_base_lora_state_dict()
+
         is_split_lora, high_noise_spec, low_noise_spec = self._get_wan22_split_lora_specs(lora_path)
         if not is_split_lora:
             resolved_lora_path = self._resolve_wan22_base_lora_path(lora_path)
