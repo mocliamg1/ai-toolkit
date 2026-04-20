@@ -290,6 +290,20 @@ export default function SimpleJob({
               placeholder=""
               required
             />
+            {modelArch?.additionalSections?.includes('model.lora_path') && (
+              <TextInput
+                label="Base Merge LoRA Path"
+                value={jobConfig.config.process[0].model.lora_path ?? ''}
+                docKey="config.process[0].model.lora_path"
+                onChange={(value: string | undefined) => {
+                  if (value?.trim() === '') {
+                    value = undefined;
+                  }
+                  setJobConfig(value, 'config.process[0].model.lora_path');
+                }}
+                placeholder=""
+              />
+            )}
             {modelArch?.additionalSections?.includes('model.assistant_lora_path') && (
               <TextInput
                 label="Training Adapter Path"

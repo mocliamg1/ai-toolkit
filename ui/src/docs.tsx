@@ -52,6 +52,24 @@ const docs: { [key: string]: ConfigDoc } = {
       </>
     ),
   },
+  'config.process[0].model.lora_path': {
+    title: 'Base Merge LoRA Path',
+    description: (
+      <>
+        Wan 2.2 14B T2V and I2V can fuse a LoRA into the base model before slider training starts.
+        <br />
+        <br />
+        This must point to either a combined Wan 2.2 LoRA file with stage-qualified keys or to a
+        <code>_high_noise.safetensors</code> or <code>_low_noise.safetensors</code> file from a Wan 2.2 split pair.
+        If you provide one side of a split pair, the trainer will look for the sibling file automatically and merge
+        whichever stages are available.
+        <br />
+        <br />
+        The merge happens before quantization and layer offloading, so the fused concept becomes part of the base model
+        used for training.
+      </>
+    ),
+  },
   'datasets.control_path': {
     title: 'Control Dataset',
     description: (

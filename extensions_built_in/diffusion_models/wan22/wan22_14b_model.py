@@ -1,17 +1,19 @@
 from functools import partial
+from collections import OrderedDict
 import os
 from typing import Any, Dict, Optional, Union, List
 from typing_extensions import Self
 import torch
 import yaml
+from huggingface_hub import hf_hub_download
 from toolkit.accelerator import unwrap_model
 from toolkit.basic import flush
+from toolkit.config_modules import GenerateImageConfig, ModelConfig, NetworkConfig
+from toolkit.lora_special import LoRASpecialNetwork
 from toolkit.models.wan21.wan_utils import add_first_frame_conditioning
 from toolkit.prompt_utils import PromptEmbeds
 from PIL import Image
 from diffusers import UniPCMultistepScheduler
-import torch
-from toolkit.config_modules import GenerateImageConfig, ModelConfig
 from toolkit.samplers.custom_flowmatch_sampler import (
     CustomFlowMatchEulerDiscreteScheduler,
 )
@@ -243,6 +245,212 @@ class Wan2214bModel(Wan21):
         # 8x compression  and 2x2 patch size
         return 16
 
+    def _resolve_wan22_base_lora_path(self, lora_path: str) -> str:
+        if os.path.exists(lora_path):
+            return lora_path
+
+        path_split = lora_path.split("/")
+        if len(path_split) == 3 and path_split[-1].endswith(".safetensors"):
+            repo_id = f"{path_split[0]}/{path_split[1]}"
+            self.print_and_status_update(f"Downloading Wan2.2 base merge LoRA: {lora_path}")
+            return hf_hub_download(repo_id, filename=path_split[-1])
+
+        raise ValueError(
+            "Wan2.2 base merge LoRA path must be a local `.safetensors` file or a Hugging Face path "
+            f"in the form `user/repo/file.safetensors`. Got: {lora_path}"
+        )
+
+    def _resolve_optional_wan22_base_lora_path(self, lora_path: str) -> Optional[str]:
+        try:
+            return self._resolve_wan22_base_lora_path(lora_path)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _is_wan22_stage_qualified_lora_key(key: str) -> bool:
+        return ".transformer_1." in key or ".transformer_2." in key
+
+    @staticmethod
+    def _add_stage_prefix_to_wan22_lora_key(key: str, stage_name: str) -> str:
+        if Wan2214bModel._is_wan22_stage_qualified_lora_key(key):
+            return key
+
+        prefix_map = [
+            ("diffusion_model.", f"diffusion_model.{stage_name}."),
+            ("transformer.", f"transformer.{stage_name}."),
+            ("lycoris_diffusion_model.", f"lycoris_diffusion_model.{stage_name}."),
+            ("lycoris_transformer.", f"lycoris_transformer.{stage_name}."),
+        ]
+        for prefix, replacement in prefix_map:
+            if key.startswith(prefix):
+                return key.replace(prefix, replacement, 1)
+
+        raise ValueError(
+            "Wan2.2 base merge only supports combined Wan2.2 LoRAs or `_high_noise` / `_low_noise` "
+            f"pairs. Unsupported key format: {key}"
+        )
+
+    def _stage_wan22_lora_state_dict(
+        self, state_dict: Dict[str, torch.Tensor], stage_name: str
+    ) -> OrderedDict:
+        staged_state_dict = OrderedDict()
+        for key, value in state_dict.items():
+            staged_state_dict[self._add_stage_prefix_to_wan22_lora_key(key, stage_name)] = value
+        return staged_state_dict
+
+    def _load_wan22_base_lora_state_dict(self, lora_path: str) -> OrderedDict:
+        is_split_lora = (
+            lora_path.endswith("_high_noise.safetensors")
+            or lora_path.endswith("_low_noise.safetensors")
+        )
+        if not is_split_lora:
+            resolved_lora_path = self._resolve_wan22_base_lora_path(lora_path)
+            self.model_config.lora_path = resolved_lora_path
+            state_dict = load_file(resolved_lora_path)
+            if not any(self._is_wan22_stage_qualified_lora_key(key) for key in state_dict):
+                raise ValueError(
+                    "Wan2.2 base merge only supports combined Wan2.2 LoRAs with stage-qualified keys "
+                    "or `_high_noise` / `_low_noise` LoRA pairs."
+                )
+            return OrderedDict(state_dict)
+
+        high_noise_spec = lora_path.replace(
+            "_low_noise.safetensors", "_high_noise.safetensors"
+        )
+        low_noise_spec = lora_path.replace(
+            "_high_noise.safetensors", "_low_noise.safetensors"
+        )
+        high_noise_path = self._resolve_optional_wan22_base_lora_path(high_noise_spec)
+        low_noise_path = self._resolve_optional_wan22_base_lora_path(low_noise_spec)
+
+        combined_state_dict = OrderedDict()
+        if high_noise_path is not None:
+            high_noise_lora = load_file(high_noise_path)
+            combined_state_dict.update(
+                self._stage_wan22_lora_state_dict(high_noise_lora, "transformer_1")
+            )
+        if low_noise_path is not None:
+            low_noise_lora = load_file(low_noise_path)
+            combined_state_dict.update(
+                self._stage_wan22_lora_state_dict(low_noise_lora, "transformer_2")
+            )
+
+        if len(combined_state_dict) == 0:
+            raise ValueError(
+                "Wan2.2 base merge could not resolve a valid `_high_noise` or `_low_noise` LoRA sibling. "
+                f"Expected local files or Hugging Face paths derived from: {lora_path}"
+            )
+
+        if high_noise_path is not None:
+            self.model_config.lora_path = high_noise_path
+        elif low_noise_path is not None:
+            self.model_config.lora_path = low_noise_path
+
+        return combined_state_dict
+
+    def _infer_wan22_base_lora_network_config(
+        self, state_dict: Dict[str, torch.Tensor]
+    ) -> NetworkConfig:
+        converted_state_dict = self.convert_lora_weights_before_load(state_dict)
+
+        is_lokr = any("lokr_w1" in key for key in converted_state_dict)
+        is_lora = any("lora_A" in key or "lora_down" in key for key in converted_state_dict)
+        if not is_lora and not is_lokr:
+            raise ValueError(
+                "Wan2.2 base merge only supports Wan2.2 LoRAs with recognizable LoRA or LoKr weights."
+            )
+
+        network_kwargs: Dict[str, Any] = {
+            "only_if_contains": [],
+            "target_lin_modules": ["DualWanTransformer3DModel"],
+        }
+        network_config: Dict[str, Any] = {
+            "type": "lora",
+            "network_kwargs": network_kwargs,
+            "transformer_only": False,
+            "old_lokr_format": self.use_old_lokr_format,
+        }
+
+        if is_lokr:
+            largest_factor = 0
+            only_if_contains = []
+            for key, value in converted_state_dict.items():
+                if "lokr_w1" not in key:
+                    continue
+                largest_factor = max(largest_factor, int(value.shape[0]))
+                contains_key = key.split(".lokr_w1")[0].replace("lycoris_", "")
+                if contains_key not in only_if_contains:
+                    only_if_contains.append(contains_key)
+            network_config["type"] = "lokr"
+            network_config["lokr_full_rank"] = True
+            network_config["lokr_factor"] = largest_factor
+            network_kwargs["only_if_contains"] = only_if_contains
+        else:
+            linear_dim = None
+            only_if_contains = []
+            for key, value in converted_state_dict.items():
+                if "lora_A" in key:
+                    linear_dim = int(value.shape[0])
+                    contains_key = key.split(".lora_A")[0]
+                elif "lora_down" in key:
+                    linear_dim = int(value.shape[0])
+                    contains_key = key.split(".lora_down")[0]
+                else:
+                    continue
+                if contains_key not in only_if_contains:
+                    only_if_contains.append(contains_key)
+
+            if linear_dim is None:
+                raise ValueError("Wan2.2 base merge could not infer the LoRA rank from the provided weights.")
+
+            network_config["linear"] = linear_dim
+            network_config["linear_alpha"] = linear_dim
+            network_kwargs["only_if_contains"] = only_if_contains
+
+        return NetworkConfig(**network_config)
+
+    def _cleanup_wan22_base_lora_network(self, network: LoRASpecialNetwork):
+        for module in network.get_all_modules():
+            if hasattr(module, "org_forward"):
+                module.org_module[0].forward = module.org_forward
+
+    def _merge_base_lora_into_wan22_transformer(
+        self, transformer: DualWanTransformer3DModel
+    ):
+        if self.model_config.lora_path is None:
+            return
+
+        self.print_and_status_update("Loading Wan2.2 base merge LoRA")
+        lora_state_dict = self._load_wan22_base_lora_state_dict(self.model_config.lora_path)
+        network_config = self._infer_wan22_base_lora_network_config(lora_state_dict)
+
+        self.print_and_status_update("Merging Wan2.2 base LoRA into transformers")
+        network = LoRASpecialNetwork(
+            text_encoder=None,
+            unet=transformer,
+            lora_dim=network_config.linear,
+            multiplier=1.0,
+            alpha=network_config.linear_alpha,
+            train_unet=True,
+            train_text_encoder=False,
+            conv_lora_dim=network_config.conv,
+            conv_alpha=network_config.conv_alpha,
+            is_transformer=True,
+            network_config=network_config,
+            network_type=network_config.type,
+            transformer_only=network_config.transformer_only,
+            base_model=self,
+            **network_config.network_kwargs,
+        )
+        network.apply_to(None, transformer, False, True)
+        try:
+            network.load_weights(lora_state_dict)
+            network.merge_in(1.0)
+        finally:
+            self._cleanup_wan22_base_lora_network(network)
+            del network
+            flush()
+
     def load_wan_transformer(self, transformer_path, subfolder=None):
         if self.model_config.split_model_over_gpus:
             raise ValueError(
@@ -255,11 +463,6 @@ class Wan2214bModel(Wan21):
         ):
             raise ValueError(
                 "Assistant LoRA is not supported for Wan2.2 models currently"
-            )
-
-        if self.model_config.lora_path is not None:
-            raise ValueError(
-                "Loading LoRA is not supported for Wan2.2 models currently"
             )
 
         # transformer path can be a directory that ends with /transformer or a hf path.
@@ -297,18 +500,6 @@ class Wan2214bModel(Wan21):
             transformer_1.to(self.device_torch, dtype=dtype)
             flush()
 
-        if self.model_config.quantize and self.model_config.accuracy_recovery_adapter is None:
-            # todo handle two ARAs
-            self.print_and_status_update("Quantizing Transformer 1")
-            quantize_model(self, transformer_1)
-            flush()
-
-        if self.model_config.low_vram:
-            self.print_and_status_update("Moving transformer 1 to CPU")
-            transformer_1.to("cpu")
-        else:
-            transformer_1.to(self.device_torch)
-
         self.print_and_status_update("Loading transformer 2")
         dtype = self.torch_dtype
         transformer_2 = WanTransformer3DModel.from_pretrained(
@@ -327,18 +518,6 @@ class Wan2214bModel(Wan21):
             transformer_2.to(self.device_torch, dtype=dtype)
             flush()
 
-        if self.model_config.quantize and self.model_config.accuracy_recovery_adapter is None:
-            # todo handle two ARAs
-            self.print_and_status_update("Quantizing Transformer 2")
-            quantize_model(self, transformer_2)
-            flush()
-
-        if self.model_config.low_vram:
-            self.print_and_status_update("Moving transformer 2 to CPU")
-            transformer_2.to("cpu")
-        else:
-            transformer_2.to(self.device_torch)
-    
         layer_offloading_transformer = self.model_config.layer_offloading and self.model_config.layer_offloading_transformer_percent > 0
         # make the combined model
         self.print_and_status_update("Creating DualWanTransformer3DModel")
@@ -350,6 +529,26 @@ class Wan2214bModel(Wan21):
             boundary_ratio=boundary_ratio_t2v,
             low_vram=self.model_config.low_vram,
         )
+
+        self._merge_base_lora_into_wan22_transformer(transformer)
+
+        if self.model_config.quantize and self.model_config.accuracy_recovery_adapter is None:
+            self.print_and_status_update("Quantizing Transformer 1")
+            quantize_model(self, transformer_1)
+            flush()
+
+            self.print_and_status_update("Quantizing Transformer 2")
+            quantize_model(self, transformer_2)
+            flush()
+
+        if self.model_config.low_vram:
+            self.print_and_status_update("Moving transformer 1 to CPU")
+            transformer_1.to("cpu")
+            self.print_and_status_update("Moving transformer 2 to CPU")
+            transformer_2.to("cpu")
+        else:
+            transformer_1.to(self.device_torch)
+            transformer_2.to(self.device_torch)
         
         if self.model_config.quantize and self.model_config.accuracy_recovery_adapter is not None:
             # apply the accuracy recovery adapter to both transformers
