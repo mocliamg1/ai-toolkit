@@ -43,11 +43,20 @@ export const handleModelArchChange = (
   if (!newArch?.additionalSections?.includes('model.lora_path')) {
     setJobConfig(undefined, 'config.process[0].model.lora_path');
   }
+  if (!newArch?.additionalSections?.includes('model.lora_merge_strength')) {
+    setJobConfig(undefined, 'config.process[0].model.lora_merge_strength');
+  }
   if (!newArch?.additionalSections?.includes('model.high_noise_lora_path')) {
     setJobConfig(undefined, 'config.process[0].model.high_noise_lora_path');
   }
+  if (!newArch?.additionalSections?.includes('model.high_noise_lora_merge_strength')) {
+    setJobConfig(undefined, 'config.process[0].model.high_noise_lora_merge_strength');
+  }
   if (!newArch?.additionalSections?.includes('model.low_noise_lora_path')) {
     setJobConfig(undefined, 'config.process[0].model.low_noise_lora_path');
+  }
+  if (!newArch?.additionalSections?.includes('model.low_noise_lora_merge_strength')) {
+    setJobConfig(undefined, 'config.process[0].model.low_noise_lora_merge_strength');
   }
 
   // handle layer offloading setting

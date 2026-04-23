@@ -70,7 +70,25 @@ const docs: { [key: string]: ConfigDoc } = {
         <br />
         <br />
         The merge happens before quantization and layer offloading, so the fused concept becomes part of the base model
-        used for training.
+        used for training. This legacy path uses
+        <code>config.process[0].model.lora_merge_strength</code> and defaults to <code>1.0</code>.
+      </>
+    ),
+  },
+  'config.process[0].model.lora_merge_strength': {
+    title: 'Base Merge LoRA Strength',
+    description: (
+      <>
+        Strength applied when merging the legacy single <code>config.process[0].model.lora_path</code> flow into the
+        Wan 2.2 base model.
+        <br />
+        <br />
+        Default is <code>1.0</code>. Values above <code>1.0</code> strengthen the merge, and negative values subtract
+        the LoRA effect.
+        <br />
+        <br />
+        If either explicit high-noise or low-noise path is set, explicit mode is used and this legacy strength field
+        is ignored.
       </>
     ),
   },
@@ -87,7 +105,21 @@ const docs: { [key: string]: ConfigDoc } = {
         <br />
         Use this when your high-noise and low-noise stages come from different LoRA files. Unqualified single-stage
         Wan LoRAs will be staged into <code>transformer_1</code>. Already stage-qualified keys are accepted only if
-        they already target the high-noise stage.
+        they already target the high-noise stage. This path uses
+        <code>config.process[0].model.high_noise_lora_merge_strength</code> and defaults to <code>1.0</code>.
+      </>
+    ),
+  },
+  'config.process[0].model.high_noise_lora_merge_strength': {
+    title: 'High-Noise LoRA Strength',
+    description: (
+      <>
+        Strength applied when merging <code>config.process[0].model.high_noise_lora_path</code> into the Wan 2.2
+        high-noise stage.
+        <br />
+        <br />
+        Default is <code>1.0</code>. This is independent from the low-noise strength, so you can blend the two stages
+        with different intensities.
       </>
     ),
   },
@@ -104,7 +136,21 @@ const docs: { [key: string]: ConfigDoc } = {
         <br />
         Use this when your high-noise and low-noise stages come from different LoRA files. Unqualified single-stage
         Wan LoRAs will be staged into <code>transformer_2</code>. Already stage-qualified keys are accepted only if
-        they already target the low-noise stage.
+        they already target the low-noise stage. This path uses
+        <code>config.process[0].model.low_noise_lora_merge_strength</code> and defaults to <code>1.0</code>.
+      </>
+    ),
+  },
+  'config.process[0].model.low_noise_lora_merge_strength': {
+    title: 'Low-Noise LoRA Strength',
+    description: (
+      <>
+        Strength applied when merging <code>config.process[0].model.low_noise_lora_path</code> into the Wan 2.2
+        low-noise stage.
+        <br />
+        <br />
+        Default is <code>1.0</code>. This is independent from the high-noise strength, so you can blend the two
+        stages with different intensities.
       </>
     ),
   },

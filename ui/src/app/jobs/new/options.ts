@@ -31,8 +31,11 @@ type AdditionalSections =
   | 'model.low_vram'
   | 'model.qie.match_target_res'
   | 'model.lora_path'
+  | 'model.lora_merge_strength'
   | 'model.high_noise_lora_path'
+  | 'model.high_noise_lora_merge_strength'
   | 'model.low_noise_lora_path'
+  | 'model.low_noise_lora_merge_strength'
   | 'model.assistant_lora_path';
 
 type ModelGroup = 'image' | 'instruction' | 'video' | 'experimental' | 'audio';
@@ -257,6 +260,9 @@ export const modelArchs: ModelArch[] = [
       'config.process[0].sample.fps': [16, 1],
       'config.process[0].model.low_vram': [true, false],
       'config.process[0].train.timestep_type': ['linear', 'sigmoid'],
+      'config.process[0].model.lora_merge_strength': [1.0, undefined],
+      'config.process[0].model.high_noise_lora_merge_strength': [1.0, undefined],
+      'config.process[0].model.low_noise_lora_merge_strength': [1.0, undefined],
       'config.process[0].model.model_kwargs': [
         {
           train_high_noise: true,
@@ -272,8 +278,11 @@ export const modelArchs: ModelArch[] = [
       'model.multistage',
       'model.layer_offloading',
       'model.lora_path',
+      'model.lora_merge_strength',
       'model.high_noise_lora_path',
+      'model.high_noise_lora_merge_strength',
       'model.low_noise_lora_path',
+      'model.low_noise_lora_merge_strength',
     ],
     accuracyRecoveryAdapters: {
       // '3 bit with ARA': 'uint3|ostris/accuracy_recovery_adapters/wan22_14b_t2i_torchao_uint3.safetensors',
@@ -296,6 +305,9 @@ export const modelArchs: ModelArch[] = [
       'config.process[0].sample.fps': [16, 1],
       'config.process[0].model.low_vram': [true, false],
       'config.process[0].train.timestep_type': ['linear', 'sigmoid'],
+      'config.process[0].model.lora_merge_strength': [1.0, undefined],
+      'config.process[0].model.high_noise_lora_merge_strength': [1.0, undefined],
+      'config.process[0].model.low_noise_lora_merge_strength': [1.0, undefined],
       'config.process[0].model.model_kwargs': [
         {
           train_high_noise: true,
@@ -312,8 +324,11 @@ export const modelArchs: ModelArch[] = [
       'model.multistage',
       'model.layer_offloading',
       'model.lora_path',
+      'model.lora_merge_strength',
       'model.high_noise_lora_path',
+      'model.high_noise_lora_merge_strength',
       'model.low_noise_lora_path',
+      'model.low_noise_lora_merge_strength',
     ],
     accuracyRecoveryAdapters: {
       '4 bit with ARA': 'uint4|ostris/accuracy_recovery_adapters/wan22_14b_i2v_torchao_uint4.safetensors',

@@ -304,33 +304,68 @@ export default function SimpleJob({
                   }}
                   placeholder=""
                 />
-                {modelArch?.additionalSections?.includes('model.high_noise_lora_path') && (
-                  <TextInput
-                    label="High-Noise LoRA Path"
-                    value={jobConfig.config.process[0].model.high_noise_lora_path ?? ''}
-                    docKey="config.process[0].model.high_noise_lora_path"
-                    onChange={(value: string | undefined) => {
-                      if (value?.trim() === '') {
-                        value = undefined;
-                      }
-                      setJobConfig(value, 'config.process[0].model.high_noise_lora_path');
-                    }}
-                    placeholder=""
+                {modelArch?.additionalSections?.includes('model.lora_merge_strength') && (
+                  <NumberInput
+                    label="Base Merge LoRA Strength"
+                    value={jobConfig.config.process[0].model.lora_merge_strength ?? 1.0}
+                    docKey="config.process[0].model.lora_merge_strength"
+                    onChange={value => setJobConfig(value, 'config.process[0].model.lora_merge_strength')}
+                    step={0.05}
                   />
                 )}
+                {modelArch?.additionalSections?.includes('model.high_noise_lora_path') && (
+                  <>
+                    <TextInput
+                      label="High-Noise LoRA Path"
+                      value={jobConfig.config.process[0].model.high_noise_lora_path ?? ''}
+                      docKey="config.process[0].model.high_noise_lora_path"
+                      onChange={(value: string | undefined) => {
+                        if (value?.trim() === '') {
+                          value = undefined;
+                        }
+                        setJobConfig(value, 'config.process[0].model.high_noise_lora_path');
+                      }}
+                      placeholder=""
+                    />
+                    {modelArch?.additionalSections?.includes('model.high_noise_lora_merge_strength') && (
+                      <NumberInput
+                        label="High-Noise LoRA Strength"
+                        value={jobConfig.config.process[0].model.high_noise_lora_merge_strength ?? 1.0}
+                        docKey="config.process[0].model.high_noise_lora_merge_strength"
+                        onChange={value =>
+                          setJobConfig(value, 'config.process[0].model.high_noise_lora_merge_strength')
+                        }
+                        step={0.05}
+                      />
+                    )}
+                  </>
+                )}
                 {modelArch?.additionalSections?.includes('model.low_noise_lora_path') && (
-                  <TextInput
-                    label="Low-Noise LoRA Path"
-                    value={jobConfig.config.process[0].model.low_noise_lora_path ?? ''}
-                    docKey="config.process[0].model.low_noise_lora_path"
-                    onChange={(value: string | undefined) => {
-                      if (value?.trim() === '') {
-                        value = undefined;
-                      }
-                      setJobConfig(value, 'config.process[0].model.low_noise_lora_path');
-                    }}
-                    placeholder=""
-                  />
+                  <>
+                    <TextInput
+                      label="Low-Noise LoRA Path"
+                      value={jobConfig.config.process[0].model.low_noise_lora_path ?? ''}
+                      docKey="config.process[0].model.low_noise_lora_path"
+                      onChange={(value: string | undefined) => {
+                        if (value?.trim() === '') {
+                          value = undefined;
+                        }
+                        setJobConfig(value, 'config.process[0].model.low_noise_lora_path');
+                      }}
+                      placeholder=""
+                    />
+                    {modelArch?.additionalSections?.includes('model.low_noise_lora_merge_strength') && (
+                      <NumberInput
+                        label="Low-Noise LoRA Strength"
+                        value={jobConfig.config.process[0].model.low_noise_lora_merge_strength ?? 1.0}
+                        docKey="config.process[0].model.low_noise_lora_merge_strength"
+                        onChange={value =>
+                          setJobConfig(value, 'config.process[0].model.low_noise_lora_merge_strength')
+                        }
+                        step={0.05}
+                      />
+                    )}
+                  </>
                 )}
               </>
             )}

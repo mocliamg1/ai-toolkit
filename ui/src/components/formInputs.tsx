@@ -115,10 +115,11 @@ export interface NumberInputProps extends InputProps {
   onChange: (value: number | null) => void;
   min?: number;
   max?: number;
+  step?: number | 'any';
 }
 
 export const NumberInput = (props: NumberInputProps) => {
-  const { label, value, onChange, placeholder, required, min, max, docKey = null } = props;
+  const { label, value, onChange, placeholder, required, min, max, step = 'any', docKey = null } = props;
   let { doc } = props;
   if (!doc && docKey) {
     doc = getDoc(docKey);
@@ -181,7 +182,7 @@ export const NumberInput = (props: NumberInputProps) => {
         required={required}
         min={min}
         max={max}
-        step="any"
+        step={step}
       />
     </div>
   );

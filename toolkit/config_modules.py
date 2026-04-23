@@ -607,8 +607,11 @@ class ModelConfig:
         self._original_refiner_name_or_path = self.refiner_name_or_path
         self.refiner_start_at = kwargs.get('refiner_start_at', 0.5)
         self.lora_path = kwargs.get('lora_path', None)
+        self.lora_merge_strength = kwargs.get('lora_merge_strength', 1.0)
         self.high_noise_lora_path = kwargs.get('high_noise_lora_path', None)
+        self.high_noise_lora_merge_strength = kwargs.get('high_noise_lora_merge_strength', 1.0)
         self.low_noise_lora_path = kwargs.get('low_noise_lora_path', None)
+        self.low_noise_lora_merge_strength = kwargs.get('low_noise_lora_merge_strength', 1.0)
         # mainly for decompression loras for distilled models
         self.assistant_lora_path = kwargs.get('assistant_lora_path', None)
         self.inference_lora_path = kwargs.get('inference_lora_path', None)

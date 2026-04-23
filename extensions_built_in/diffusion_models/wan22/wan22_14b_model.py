@@ -441,78 +441,136 @@ class Wan2214bModel(Wan21):
         self, lora_path: str, stage_name: str
     ) -> OrderedDict:
         resolved_lora_path = self._resolve_wan22_base_lora_path(lora_path)
+        return self._load_explicit_wan22_stage_lora_state_dict_from_resolved_path(
+            resolved_lora_path, stage_name
+        )
+
+    def _load_explicit_wan22_stage_lora_state_dict_from_resolved_path(
+        self, resolved_lora_path: str, stage_name: str
+    ) -> OrderedDict:
         state_dict = load_file(resolved_lora_path)
         self._validate_wan22_explicit_stage_state_dict(
             state_dict, stage_name, resolved_lora_path
         )
         return self._stage_wan22_lora_state_dict(state_dict, stage_name)
 
-    def _load_explicit_wan22_base_lora_state_dict(self) -> OrderedDict:
-        combined_state_dict = OrderedDict()
+    def _build_wan22_base_lora_merge_spec(
+        self,
+        *,
+        state_dict: Dict[str, torch.Tensor],
+        strength: float,
+        source_path: str,
+        stage_name: Optional[str] = None,
+        label: str,
+    ) -> Dict[str, Any]:
+        return {
+            "state_dict": OrderedDict(state_dict),
+            "strength": strength,
+            "source_path": source_path,
+            "stage_name": stage_name,
+            "label": label,
+        }
+
+    def _get_explicit_wan22_base_lora_merge_specs(self) -> List[Dict[str, Any]]:
+        merge_specs: List[Dict[str, Any]] = []
 
         high_noise_path = self.model_config.high_noise_lora_path
         low_noise_path = self.model_config.low_noise_lora_path
 
         if high_noise_path is not None:
-            combined_state_dict.update(
-                self._load_explicit_wan22_stage_lora_state_dict(
-                    high_noise_path, "transformer_1"
+            resolved_path = self._resolve_wan22_base_lora_path(high_noise_path)
+            merge_specs.append(
+                self._build_wan22_base_lora_merge_spec(
+                    state_dict=self._load_explicit_wan22_stage_lora_state_dict_from_resolved_path(
+                        resolved_path, "transformer_1"
+                    ),
+                    strength=self.model_config.high_noise_lora_merge_strength,
+                    source_path=resolved_path,
+                    stage_name="transformer_1",
+                    label="high-noise",
                 )
             )
         if low_noise_path is not None:
-            combined_state_dict.update(
-                self._load_explicit_wan22_stage_lora_state_dict(
-                    low_noise_path, "transformer_2"
+            resolved_path = self._resolve_wan22_base_lora_path(low_noise_path)
+            merge_specs.append(
+                self._build_wan22_base_lora_merge_spec(
+                    state_dict=self._load_explicit_wan22_stage_lora_state_dict_from_resolved_path(
+                        resolved_path, "transformer_2"
+                    ),
+                    strength=self.model_config.low_noise_lora_merge_strength,
+                    source_path=resolved_path,
+                    stage_name="transformer_2",
+                    label="low-noise",
                 )
             )
 
-        if len(combined_state_dict) == 0:
+        if len(merge_specs) == 0:
             raise ValueError(
                 "Wan2.2 explicit base merge mode requires at least one of "
                 "`high_noise_lora_path` or `low_noise_lora_path`."
             )
 
-        return combined_state_dict
+        return merge_specs
 
-    def _load_wan22_base_lora_state_dict(self, lora_path: str) -> OrderedDict:
-        if self._has_explicit_wan22_base_lora_paths():
-            return self._load_explicit_wan22_base_lora_state_dict()
-
+    def _get_legacy_wan22_base_lora_merge_specs(self, lora_path: str) -> List[Dict[str, Any]]:
         is_split_lora, high_noise_spec, low_noise_spec = self._get_wan22_split_lora_specs(lora_path)
         if not is_split_lora:
             resolved_lora_path = self._resolve_wan22_base_lora_path(lora_path)
             self.model_config.lora_path = resolved_lora_path
             state_dict = load_file(resolved_lora_path)
             self._validate_wan22_base_lora_state_dict(state_dict)
+            label = "combined"
+            stage_name = None
             if not any(self._is_wan22_stage_qualified_lora_key(key) for key in state_dict):
                 stage_name = self._infer_single_stage_name_for_wan22_base_lora(resolved_lora_path)
-                if stage_name is not None:
-                    return self._stage_wan22_lora_state_dict(state_dict, stage_name)
-                raise ValueError(
-                    "Wan2.2 base merge found a valid single-stage LoRA, but the target stage could not be "
-                    "inferred. Use a filename ending in `_high_noise`, `_low_noise`, `_high`, or `_low`, "
-                    "or set only one of `train_high_noise` / `train_low_noise`."
+                if stage_name is None:
+                    raise ValueError(
+                        "Wan2.2 base merge found a valid single-stage LoRA, but the target stage could not be "
+                        "inferred. Use a filename ending in `_high_noise`, `_low_noise`, `_high`, or `_low`, "
+                        "or set only one of `train_high_noise` / `train_low_noise`."
+                    )
+                state_dict = self._stage_wan22_lora_state_dict(state_dict, stage_name)
+                label = "single-stage"
+            return [
+                self._build_wan22_base_lora_merge_spec(
+                    state_dict=state_dict,
+                    strength=self.model_config.lora_merge_strength,
+                    source_path=resolved_lora_path,
+                    stage_name=stage_name,
+                    label=label,
                 )
-            return OrderedDict(state_dict)
+            ]
 
         high_noise_path = self._resolve_optional_wan22_base_lora_path(high_noise_spec)
         low_noise_path = self._resolve_optional_wan22_base_lora_path(low_noise_spec)
 
-        combined_state_dict = OrderedDict()
+        merge_specs: List[Dict[str, Any]] = []
         if high_noise_path is not None:
             high_noise_lora = load_file(high_noise_path)
             self._validate_wan22_base_lora_state_dict(high_noise_lora)
-            combined_state_dict.update(
-                self._stage_wan22_lora_state_dict(high_noise_lora, "transformer_1")
+            merge_specs.append(
+                self._build_wan22_base_lora_merge_spec(
+                    state_dict=self._stage_wan22_lora_state_dict(high_noise_lora, "transformer_1"),
+                    strength=self.model_config.lora_merge_strength,
+                    source_path=high_noise_path,
+                    stage_name="transformer_1",
+                    label="high-noise sibling",
+                )
             )
         if low_noise_path is not None:
             low_noise_lora = load_file(low_noise_path)
             self._validate_wan22_base_lora_state_dict(low_noise_lora)
-            combined_state_dict.update(
-                self._stage_wan22_lora_state_dict(low_noise_lora, "transformer_2")
+            merge_specs.append(
+                self._build_wan22_base_lora_merge_spec(
+                    state_dict=self._stage_wan22_lora_state_dict(low_noise_lora, "transformer_2"),
+                    strength=self.model_config.lora_merge_strength,
+                    source_path=low_noise_path,
+                    stage_name="transformer_2",
+                    label="low-noise sibling",
+                )
             )
 
-        if len(combined_state_dict) == 0:
+        if len(merge_specs) == 0:
             raise ValueError(
                 "Wan2.2 base merge could not resolve a valid `_high_noise` or `_low_noise` LoRA sibling. "
                 f"Expected local files or Hugging Face paths derived from: {lora_path}"
@@ -523,6 +581,24 @@ class Wan2214bModel(Wan21):
         elif low_noise_path is not None:
             self.model_config.lora_path = low_noise_path
 
+        return merge_specs
+
+    def _get_wan22_base_lora_merge_specs(self) -> List[Dict[str, Any]]:
+        if self._has_explicit_wan22_base_lora_paths():
+            return self._get_explicit_wan22_base_lora_merge_specs()
+        if self.model_config.lora_path is None:
+            return []
+        return self._get_legacy_wan22_base_lora_merge_specs(self.model_config.lora_path)
+
+    def _load_wan22_base_lora_state_dict(self, lora_path: str) -> OrderedDict:
+        merge_specs = (
+            self._get_explicit_wan22_base_lora_merge_specs()
+            if self._has_explicit_wan22_base_lora_paths()
+            else self._get_legacy_wan22_base_lora_merge_specs(lora_path)
+        )
+        combined_state_dict = OrderedDict()
+        for merge_spec in merge_specs:
+            combined_state_dict.update(merge_spec["state_dict"])
         return combined_state_dict
 
     def _infer_wan22_base_lora_network_config(
@@ -587,6 +663,8 @@ class Wan2214bModel(Wan21):
         return NetworkConfig(**network_config)
 
     def _cleanup_wan22_base_lora_network(self, network: LoRASpecialNetwork):
+        if not hasattr(network, "get_all_modules"):
+            return
         for module in network.get_all_modules():
             if hasattr(module, "org_forward"):
                 module.org_module[0].forward = module.org_forward
@@ -594,42 +672,48 @@ class Wan2214bModel(Wan21):
     def _merge_base_lora_into_wan22_transformer(
         self, transformer: DualWanTransformer3DModel
     ):
-        if (
-            self.model_config.lora_path is None
-            and not self._has_explicit_wan22_base_lora_paths()
-        ):
+        merge_specs = self._get_wan22_base_lora_merge_specs()
+        if len(merge_specs) == 0:
             return
 
         self.print_and_status_update("Loading Wan2.2 base merge LoRA")
-        lora_state_dict = self._load_wan22_base_lora_state_dict(self.model_config.lora_path or "")
-        network_config = self._infer_wan22_base_lora_network_config(lora_state_dict)
+        for merge_spec in merge_specs:
+            lora_state_dict = merge_spec["state_dict"]
+            merge_strength = merge_spec["strength"]
+            network_config = self._infer_wan22_base_lora_network_config(lora_state_dict)
 
-        self.print_and_status_update("Merging Wan2.2 base LoRA into transformers")
-        network = LoRASpecialNetwork(
-            text_encoder=None,
-            unet=transformer,
-            lora_dim=network_config.linear,
-            multiplier=1.0,
-            alpha=network_config.linear_alpha,
-            train_unet=True,
-            train_text_encoder=False,
-            conv_lora_dim=network_config.conv,
-            conv_alpha=network_config.conv_alpha,
-            is_transformer=True,
-            network_config=network_config,
-            network_type=network_config.type,
-            transformer_only=network_config.transformer_only,
-            base_model=self,
-            **network_config.network_kwargs,
-        )
-        network.apply_to(None, transformer, False, True)
-        try:
-            network.load_weights(lora_state_dict)
-            network.merge_in(1.0)
-        finally:
-            self._cleanup_wan22_base_lora_network(network)
-            del network
-            flush()
+            stage_label = merge_spec["label"]
+            if merge_spec["stage_name"] is not None:
+                stage_label = f"{stage_label} ({merge_spec['stage_name']})"
+            self.print_and_status_update(
+                f"Merging Wan2.2 base LoRA into transformers: {stage_label} "
+                f"(strength {merge_strength})"
+            )
+            network = LoRASpecialNetwork(
+                text_encoder=None,
+                unet=transformer,
+                lora_dim=network_config.linear,
+                multiplier=1.0,
+                alpha=network_config.linear_alpha,
+                train_unet=True,
+                train_text_encoder=False,
+                conv_lora_dim=network_config.conv,
+                conv_alpha=network_config.conv_alpha,
+                is_transformer=True,
+                network_config=network_config,
+                network_type=network_config.type,
+                transformer_only=network_config.transformer_only,
+                base_model=self,
+                **network_config.network_kwargs,
+            )
+            network.apply_to(None, transformer, False, True)
+            try:
+                network.load_weights(lora_state_dict)
+                network.merge_in(merge_strength)
+            finally:
+                self._cleanup_wan22_base_lora_network(network)
+                del network
+                flush()
 
     def load_wan_transformer(self, transformer_path, subfolder=None):
         if self.model_config.split_model_over_gpus:
