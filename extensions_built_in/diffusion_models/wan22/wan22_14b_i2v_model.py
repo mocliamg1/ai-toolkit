@@ -114,26 +114,38 @@ class Wan2214bI2VModel(Wan2214bModel):
         timestep: torch.Tensor,  # 0 to 1000 scale
         text_embeddings: PromptEmbeds,
         batch: DataLoaderBatchDTO,
+        force_t2i_single_frame: bool = False,
         **kwargs
     ):
         # videos come in (bs, num_frames, channels, height, width)
         # images come in (bs, channels, height, width)
-        with torch.no_grad():
-            frames = batch.tensor
-            if len(frames.shape) == 4:
-                first_frames = frames
-            elif len(frames.shape) == 5:
-                first_frames = frames[:, 0]
-            else:
-                raise ValueError(f"Unknown frame shape {frames.shape}")
-            
-            # Add conditioning using the standalone function
-            conditioned_latent = add_first_frame_conditioning(
-                latent_model_input=latent_model_input,
-                first_frame=first_frames,
-                vae=self.vae
+        should_skip_single_frame_i2v = (
+            force_t2i_single_frame
+            and batch is not None
+            and (
+                (hasattr(batch, "tensor") and len(batch.tensor.shape) == 4)
+                or getattr(getattr(batch, "dataset_config", None), "num_frames", None) == 1
             )
-        
+        )
+
+        conditioned_latent = latent_model_input
+        if not should_skip_single_frame_i2v:
+            with torch.no_grad():
+                frames = batch.tensor
+                if len(frames.shape) == 4:
+                    first_frames = frames
+                elif len(frames.shape) == 5:
+                    first_frames = frames[:, 0]
+                else:
+                    raise ValueError(f"Unknown frame shape {frames.shape}")
+
+                # Add conditioning using the standalone function
+                conditioned_latent = add_first_frame_conditioning(
+                    latent_model_input=latent_model_input,
+                    first_frame=first_frames,
+                    vae=self.vae
+                )
+
         noise_pred = self.model(
             hidden_states=conditioned_latent,
             timestep=timestep,

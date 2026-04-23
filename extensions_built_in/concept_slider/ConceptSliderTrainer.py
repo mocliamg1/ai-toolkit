@@ -93,6 +93,16 @@ class ConceptSliderTrainer(DiffusionTrainer):
         # call parent
         super().hook_before_train_loop()
 
+    def _should_force_t2i_single_frame(self, batch: Optional["DataLoaderBatchDTO"]) -> bool:
+        if self.sd.arch != "wan22_14b_i2v" or batch is None:
+            return False
+
+        batch_tensor = getattr(batch, "tensor", None)
+        if batch_tensor is not None and len(batch_tensor.shape) == 4:
+            return True
+
+        return getattr(getattr(batch, "dataset_config", None), "num_frames", None) == 1
+
     def get_guided_loss(
         self,
         noisy_latents: torch.Tensor,
@@ -112,6 +122,7 @@ class ConceptSliderTrainer(DiffusionTrainer):
         if self.network is not None:
             was_network_active = self.network.is_active
             self.network.is_active = False
+        force_t2i_single_frame = self._should_force_t2i_single_frame(batch)
 
         # do out prior preds first
         with torch.no_grad():
@@ -161,6 +172,7 @@ class ConceptSliderTrainer(DiffusionTrainer):
                 guidance_scale=1.0,
                 guidance_embedding_scale=1.0,
                 batch=batch,
+                force_t2i_single_frame=force_t2i_single_frame,
             )
 
             if self.anchor_class_embeds is not None:
@@ -238,6 +250,7 @@ class ConceptSliderTrainer(DiffusionTrainer):
             guidance_scale=1.0,
             guidance_embedding_scale=1.0,
             batch=batch,
+            force_t2i_single_frame=force_t2i_single_frame,
         )
 
         if self.anchor_class_embeds is not None:
@@ -272,6 +285,7 @@ class ConceptSliderTrainer(DiffusionTrainer):
             guidance_scale=1.0,
             guidance_embedding_scale=1.0,
             batch=batch,
+            force_t2i_single_frame=force_t2i_single_frame,
         )
 
         if self.anchor_class_embeds is not None:
