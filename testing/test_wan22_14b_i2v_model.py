@@ -20,8 +20,9 @@ from toolkit.prompt_utils import PromptEmbeds
 
 
 class _FakeTransformer:
-    def __init__(self):
+    def __init__(self, in_channels=26):
         self.hidden_states = []
+        self.patch_embedding = SimpleNamespace(in_channels=in_channels)
 
     def __call__(self, hidden_states, **kwargs):
         self.hidden_states.append(hidden_states)
@@ -52,9 +53,9 @@ def _make_prompt_embeds():
     return PromptEmbeds(torch.zeros(1, 4))
 
 
-def _make_i2v_model():
+def _make_i2v_model(in_channels=26):
     model = object.__new__(Wan2214bI2VModel)
-    model.model = _FakeTransformer()
+    model.model = _FakeTransformer(in_channels=in_channels)
     model.vae = object()
     return model
 
@@ -80,13 +81,16 @@ def test_force_t2i_single_frame_skips_first_frame_conditioning(monkeypatch):
         force_t2i_single_frame=True,
     )
 
-    assert torch.equal(model.model.hidden_states[-1], latent_model_input)
+    hidden_states = model.model.hidden_states[-1]
+    assert hidden_states.shape == (1, 26, 1, 2, 2)
+    assert torch.equal(hidden_states[:, :16], latent_model_input)
+    assert torch.count_nonzero(hidden_states[:, 16:]) == 0
 
 
 def test_image_batches_keep_first_frame_conditioning_by_default(monkeypatch):
     model = _make_i2v_model()
     latent_model_input = torch.randn(1, 16, 1, 2, 2)
-    sentinel = torch.randn_like(latent_model_input)
+    sentinel = torch.randn(1, 26, 1, 2, 2)
     batch = SimpleNamespace(
         tensor=torch.randn(1, 3, 8, 8),
         dataset_config=SimpleNamespace(num_frames=1),
@@ -111,7 +115,7 @@ def test_image_batches_keep_first_frame_conditioning_by_default(monkeypatch):
 def test_video_batches_still_use_first_frame_conditioning(monkeypatch):
     model = _make_i2v_model()
     latent_model_input = torch.randn(1, 16, 3, 2, 2)
-    sentinel = torch.randn_like(latent_model_input)
+    sentinel = torch.randn(1, 26, 3, 2, 2)
     calls = {}
     batch = SimpleNamespace(
         tensor=torch.randn(1, 9, 3, 8, 8),

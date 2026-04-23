@@ -128,8 +128,32 @@ class Wan2214bI2VModel(Wan2214bModel):
             )
         )
 
-        conditioned_latent = latent_model_input
-        if not should_skip_single_frame_i2v:
+        if should_skip_single_frame_i2v:
+            target_in_channels = getattr(
+                getattr(self.model, "patch_embedding", None), "in_channels", None
+            )
+            if target_in_channels is None and hasattr(self.model, "config"):
+                target_in_channels = getattr(self.model.config, "in_channels", None)
+            if target_in_channels is None and hasattr(self.model, "patch_embedding"):
+                target_in_channels = self.model.patch_embedding.weight.shape[1]
+
+            if target_in_channels is None or target_in_channels <= latent_model_input.shape[1]:
+                conditioned_latent = latent_model_input
+            else:
+                extra_channels = target_in_channels - latent_model_input.shape[1]
+                empty_conditioning = torch.zeros(
+                    latent_model_input.shape[0],
+                    extra_channels,
+                    latent_model_input.shape[2],
+                    latent_model_input.shape[3],
+                    latent_model_input.shape[4],
+                    device=latent_model_input.device,
+                    dtype=latent_model_input.dtype,
+                )
+                conditioned_latent = torch.cat(
+                    [latent_model_input, empty_conditioning], dim=1
+                )
+        else:
             with torch.no_grad():
                 frames = batch.tensor
                 if len(frames.shape) == 4:
