@@ -1,5 +1,5 @@
 'use client';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   modelArchs,
   ModelArch,
@@ -22,7 +22,7 @@ import {
   SliderInput,
 } from '@/components/formInputs';
 import Card from '@/components/Card';
-import { X, Copy } from 'lucide-react';
+import { X, Copy, Plus } from 'lucide-react';
 import AddSingleImageModal, { openAddImageModal } from '@/components/AddSingleImageModal';
 import SampleControlImage from '@/components/SampleControlImage';
 import { FlipHorizontal2, FlipVertical2 } from 'lucide-react';
@@ -45,6 +45,16 @@ type Props = {
 
 const isDev = process.env.NODE_ENV === 'development';
 
+const resolutionPresetGroups = [
+  [256, 512, 768, 1024],
+  [1280, 1328, 1536],
+];
+const resolutionPresets = resolutionPresetGroups.flat();
+
+const normalizeResolutions = (resolutions: number[]) => {
+  return Array.from(new Set(resolutions)).sort((a, b) => a - b);
+};
+
 export default function SimpleJob({
   jobConfig,
   setJobConfig,
@@ -57,6 +67,8 @@ export default function SimpleJob({
   datasetOptions,
   isLoading,
 }: Props) {
+  const [customResolutionInputs, setCustomResolutionInputs] = useState<Record<number, string>>({});
+
   const modelArch = useMemo(() => {
     return modelArchs.find(a => a.name === jobConfig.config.process[0].model.arch) as ModelArch;
   }, [jobConfig.config.process[0].model.arch]);
@@ -78,6 +90,29 @@ export default function SimpleJob({
 
   const isVideoModel = !!(modelArch?.group === 'video');
   const isAudioModel = !!(modelArch?.group === 'audio');
+
+  const getDatasetResolutions = (index: number) => {
+    const resolutions = jobConfig.config.process[0].datasets[index]?.resolution;
+    return Array.isArray(resolutions) ? resolutions : [];
+  };
+
+  const setDatasetResolutions = (index: number, resolutions: number[]) => {
+    setJobConfig(normalizeResolutions(resolutions), `config.process[0].datasets[${index}].resolution`);
+  };
+
+  const addCustomResolution = (index: number) => {
+    const inputValue = customResolutionInputs[index]?.trim() ?? '';
+    if (!inputValue) return;
+
+    const parsedResolution = Number(inputValue);
+    if (!Number.isInteger(parsedResolution) || parsedResolution <= 0) return;
+
+    const resolutions = getDatasetResolutions(index);
+    if (resolutions.includes(parsedResolution)) return;
+
+    setDatasetResolutions(index, [...resolutions, parsedResolution]);
+    setCustomResolutionInputs(inputs => ({ ...inputs, [index]: '' }));
+  };
 
   const taggedSampleArr: Record<string, any>[] | null = useMemo(() => {
     if (!modelArch) return null;
@@ -1169,27 +1204,70 @@ export default function SimpleJob({
                       <div>
                         <FormGroup label="Resolutions" className="pt-2">
                           <div className="grid grid-cols-2 gap-2">
-                            {[
-                              [256, 512, 768, 1024],
-                              [1280, 1328, 1536],
-                            ].map(resGroup => (
+                            {resolutionPresetGroups.map(resGroup => (
                               <div key={resGroup[0]} className="space-y-2">
                                 {resGroup.map(res => (
                                   <Checkbox
                                     key={res}
                                     label={res.toString()}
-                                    checked={dataset.resolution.includes(res)}
+                                    checked={getDatasetResolutions(i).includes(res)}
                                     onChange={value => {
-                                      const resolutions = dataset.resolution.includes(res)
-                                        ? dataset.resolution.filter(r => r !== res)
-                                        : [...dataset.resolution, res];
-                                      setJobConfig(resolutions, `config.process[0].datasets[${i}].resolution`);
+                                      const resolutions = getDatasetResolutions(i);
+                                      const updatedResolutions = value
+                                        ? [...resolutions, res]
+                                        : resolutions.filter(r => r !== res);
+                                      setDatasetResolutions(i, updatedResolutions);
                                     }}
                                   />
                                 ))}
                               </div>
                             ))}
                           </div>
+                          <div className="flex items-end gap-2 pt-2">
+                            <TextInput
+                              label="Custom"
+                              value={customResolutionInputs[i] ?? ''}
+                              onChange={value =>
+                                setCustomResolutionInputs(inputs => ({
+                                  ...inputs,
+                                  [i]: value,
+                                }))
+                              }
+                              placeholder="896"
+                              className="flex-1"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => addCustomResolution(i)}
+                              className="h-8 px-3 bg-gray-700 hover:bg-gray-600 rounded-sm transition-colors flex items-center gap-1 text-sm"
+                              title="Add custom resolution"
+                            >
+                              <Plus className="w-4 h-4" />
+                              Add
+                            </button>
+                          </div>
+                          {getDatasetResolutions(i).some(res => !resolutionPresets.includes(res)) && (
+                            <div className="pt-2 space-y-2">
+                              {getDatasetResolutions(i)
+                                .filter(res => !resolutionPresets.includes(res))
+                                .sort((a, b) => a - b)
+                                .map(res => (
+                                  <Checkbox
+                                    key={res}
+                                    label={res.toString()}
+                                    checked
+                                    onChange={value => {
+                                      if (!value) {
+                                        setDatasetResolutions(
+                                          i,
+                                          getDatasetResolutions(i).filter(r => r !== res),
+                                        );
+                                      }
+                                    }}
+                                  />
+                                ))}
+                            </div>
+                          )}
                         </FormGroup>
                       </div>
                     )}
