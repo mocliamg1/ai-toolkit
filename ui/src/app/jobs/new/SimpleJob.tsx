@@ -498,6 +498,31 @@ export default function SimpleJob({
                 min={1}
                 required
               />
+              {modelArch?.additionalSections?.includes('model.image_i2v_conditioning') && (
+                <FormGroup label="Image-Only I2V Conditioning" className="pt-2">
+                  <Checkbox
+                    label="Mixed Conditioning"
+                    checked={jobConfig.config.process[0].model.model_kwargs?.image_i2v_conditioning || false}
+                    onChange={value =>
+                      setJobConfig(value, 'config.process[0].model.model_kwargs.image_i2v_conditioning')
+                    }
+                  />
+                  {jobConfig.config.process[0].model.model_kwargs?.image_i2v_conditioning && (
+                    <SliderInput
+                      label="Conditioning Steps %"
+                      value={Math.round(
+                        (jobConfig.config.process[0].model.model_kwargs?.image_i2v_conditioning_prob ?? 0.2) * 100,
+                      )}
+                      onChange={value =>
+                        setJobConfig(value * 0.01, 'config.process[0].model.model_kwargs.image_i2v_conditioning_prob')
+                      }
+                      min={0}
+                      max={100}
+                      step={1}
+                    />
+                  )}
+                </FormGroup>
+              )}
             </Card>
           )}
           <Card title="Target">

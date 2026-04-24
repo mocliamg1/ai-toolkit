@@ -57,10 +57,12 @@ def _make_i2v_model(in_channels=26):
     model = object.__new__(Wan2214bI2VModel)
     model.model = _FakeTransformer(in_channels=in_channels)
     model.vae = object()
+    model.image_i2v_conditioning = False
+    model.image_i2v_conditioning_prob = 0.2
     return model
 
 
-def test_force_t2i_single_frame_skips_first_frame_conditioning(monkeypatch):
+def test_single_frame_batches_use_empty_conditioning_by_default(monkeypatch):
     model = _make_i2v_model()
     latent_model_input = torch.randn(1, 16, 1, 2, 2)
     batch = SimpleNamespace(
@@ -78,6 +80,36 @@ def test_force_t2i_single_frame_skips_first_frame_conditioning(monkeypatch):
         timestep=torch.tensor([1]),
         text_embeddings=_make_prompt_embeds(),
         batch=batch,
+    )
+
+    hidden_states = model.model.hidden_states[-1]
+    assert hidden_states.shape == (1, 26, 1, 2, 2)
+    assert torch.equal(hidden_states[:, :16], latent_model_input)
+    assert torch.count_nonzero(hidden_states[:, 16:]) == 0
+
+
+def test_force_flag_keeps_single_frame_empty_conditioning(monkeypatch):
+    model = _make_i2v_model()
+    latent_model_input = torch.randn(1, 16, 1, 2, 2)
+    batch = SimpleNamespace(
+        tensor=torch.randn(1, 3, 8, 8),
+        dataset_config=SimpleNamespace(num_frames=1),
+    )
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("single-frame conditioning should be skipped")
+
+    monkeypatch.setattr(
+        wan22_i2v_module,
+        "add_first_frame_conditioning",
+        fail_if_called,
+    )
+
+    model.get_noise_prediction(
+        latent_model_input=latent_model_input,
+        timestep=torch.tensor([1]),
+        text_embeddings=_make_prompt_embeds(),
+        batch=batch,
         force_t2i_single_frame=True,
     )
 
@@ -87,19 +119,35 @@ def test_force_t2i_single_frame_skips_first_frame_conditioning(monkeypatch):
     assert torch.count_nonzero(hidden_states[:, 16:]) == 0
 
 
-def test_image_batches_keep_first_frame_conditioning_by_default(monkeypatch):
+def test_single_frame_opt_in_uses_degraded_first_frame_conditioning(monkeypatch):
     model = _make_i2v_model()
+    model.image_i2v_conditioning = True
+    model.image_i2v_conditioning_prob = 1.0
     latent_model_input = torch.randn(1, 16, 1, 2, 2)
     sentinel = torch.randn(1, 26, 1, 2, 2)
+    calls = {}
     batch = SimpleNamespace(
         tensor=torch.randn(1, 3, 8, 8),
         dataset_config=SimpleNamespace(num_frames=1),
     )
 
+    def fake_degrade(first_frames):
+        calls["degraded_input_shape"] = first_frames.shape
+        return first_frames * 0.5
+
+    def fake_add_first_frame_conditioning(**kwargs):
+        calls["first_frame"] = kwargs["first_frame"]
+        return sentinel
+
+    monkeypatch.setattr(
+        model,
+        "degrade_image_i2v_conditioning",
+        fake_degrade,
+    )
     monkeypatch.setattr(
         wan22_i2v_module,
         "add_first_frame_conditioning",
-        lambda **kwargs: sentinel,
+        fake_add_first_frame_conditioning,
     )
 
     model.get_noise_prediction(
@@ -109,7 +157,37 @@ def test_image_batches_keep_first_frame_conditioning_by_default(monkeypatch):
         batch=batch,
     )
 
+    assert calls["degraded_input_shape"] == (1, 3, 8, 8)
+    assert torch.equal(calls["first_frame"], batch.tensor * 0.5)
     assert torch.equal(model.model.hidden_states[-1], sentinel)
+
+
+def test_single_frame_opt_in_probability_zero_uses_empty_conditioning(monkeypatch):
+    model = _make_i2v_model()
+    model.image_i2v_conditioning = True
+    model.image_i2v_conditioning_prob = 0.0
+    latent_model_input = torch.randn(1, 16, 1, 2, 2)
+    batch = SimpleNamespace(
+        tensor=torch.randn(1, 3, 8, 8),
+        dataset_config=SimpleNamespace(num_frames=1),
+    )
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("probability zero should skip first-frame conditioning")
+
+    monkeypatch.setattr(wan22_i2v_module, "add_first_frame_conditioning", fail_if_called)
+
+    model.get_noise_prediction(
+        latent_model_input=latent_model_input,
+        timestep=torch.tensor([1]),
+        text_embeddings=_make_prompt_embeds(),
+        batch=batch,
+    )
+
+    hidden_states = model.model.hidden_states[-1]
+    assert hidden_states.shape == (1, 26, 1, 2, 2)
+    assert torch.equal(hidden_states[:, :16], latent_model_input)
+    assert torch.count_nonzero(hidden_states[:, 16:]) == 0
 
 
 def test_video_batches_still_use_first_frame_conditioning(monkeypatch):
@@ -142,6 +220,51 @@ def test_video_batches_still_use_first_frame_conditioning(monkeypatch):
 
     assert calls["first_frame_shape"] == (1, 3, 8, 8)
     assert torch.equal(model.model.hidden_states[-1], sentinel)
+
+
+def test_auto_frame_video_batches_use_first_frame_conditioning(monkeypatch):
+    model = _make_i2v_model()
+    latent_model_input = torch.randn(1, 16, 3, 2, 2)
+    sentinel = torch.randn(1, 26, 3, 2, 2)
+    calls = {}
+    batch = SimpleNamespace(
+        tensor=torch.randn(1, 9, 3, 8, 8),
+        num_frames=9,
+        dataset_config=SimpleNamespace(num_frames=1, auto_frame_count=True),
+    )
+
+    def fake_add_first_frame_conditioning(**kwargs):
+        calls["first_frame_shape"] = kwargs["first_frame"].shape
+        return sentinel
+
+    monkeypatch.setattr(
+        wan22_i2v_module,
+        "add_first_frame_conditioning",
+        fake_add_first_frame_conditioning,
+    )
+
+    model.get_noise_prediction(
+        latent_model_input=latent_model_input,
+        timestep=torch.tensor([1]),
+        text_embeddings=_make_prompt_embeds(),
+        batch=batch,
+    )
+
+    assert calls["first_frame_shape"] == (1, 3, 8, 8)
+    assert torch.equal(model.model.hidden_states[-1], sentinel)
+
+
+def test_degrade_image_i2v_conditioning_preserves_shape_dtype_device_and_range():
+    source = torch.linspace(-1.0, 1.0, steps=2 * 3 * 8 * 8, dtype=torch.float32)
+    source = source.reshape(2, 3, 8, 8)
+
+    degraded = Wan2214bI2VModel.degrade_image_i2v_conditioning(source)
+
+    assert degraded.shape == source.shape
+    assert degraded.dtype == source.dtype
+    assert degraded.device == source.device
+    assert degraded.min() >= -1.0
+    assert degraded.max() <= 1.0
 
 
 def _make_concept_slider_trainer(arch):
@@ -203,6 +326,36 @@ def test_concept_slider_does_not_force_flag_for_wan22_video_batches():
     batch = SimpleNamespace(
         tensor=torch.randn(1, 9, 3, 8, 8),
         dataset_config=SimpleNamespace(num_frames=9),
+    )
+
+    trainer.get_guided_loss(
+        noisy_latents=torch.randn(1, 16, 3, 2, 2),
+        conditional_embeds=_make_prompt_embeds(),
+        match_adapter_assist=False,
+        network_weight_list=[],
+        timesteps=torch.tensor([1]),
+        pred_kwargs={},
+        batch=batch,
+        noise=torch.randn(1, 16, 3, 2, 2),
+    )
+
+    assert calls == [False, False, False]
+
+
+def test_concept_slider_does_not_force_flag_for_wan22_auto_frame_video_batches():
+    trainer = _make_concept_slider_trainer("wan22_14b_i2v")
+    calls = []
+
+    def fake_predict_noise(**kwargs):
+        calls.append(kwargs.get("force_t2i_single_frame"))
+        return kwargs["latents"].clone().requires_grad_(True)
+
+    trainer.sd.predict_noise = fake_predict_noise
+
+    batch = SimpleNamespace(
+        tensor=torch.randn(1, 9, 3, 8, 8),
+        num_frames=9,
+        dataset_config=SimpleNamespace(num_frames=1, auto_frame_count=True),
     )
 
     trainer.get_guided_loss(

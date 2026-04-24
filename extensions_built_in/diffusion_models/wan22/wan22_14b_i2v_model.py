@@ -1,19 +1,82 @@
+import random
 import torch
 from toolkit.models.wan21.wan_utils import add_first_frame_conditioning
 from toolkit.prompt_utils import PromptEmbeds
 from PIL import Image
-import torch
 from toolkit.config_modules import GenerateImageConfig
 from .wan22_pipeline import Wan22Pipeline
 
 from toolkit.data_transfer_object.data_loader import DataLoaderBatchDTO
-from diffusers import WanImageToVideoPipeline
 from torchvision.transforms import functional as TF
 
 from .wan22_14b_model import Wan2214bModel
 
 class Wan2214bI2VModel(Wan2214bModel):
     arch = "wan22_14b_i2v"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        model_config = kwargs.get("model_config", None)
+        if model_config is None and len(args) > 1:
+            model_config = args[1]
+        model_kwargs = getattr(model_config, "model_kwargs", {}) if model_config is not None else {}
+        self.image_i2v_conditioning = model_kwargs.get("image_i2v_conditioning", False)
+        self.image_i2v_conditioning_prob = float(
+            model_kwargs.get("image_i2v_conditioning_prob", 0.2)
+        )
+        self.image_i2v_conditioning_prob = max(
+            0.0, min(1.0, self.image_i2v_conditioning_prob)
+        )
+
+    @staticmethod
+    def degrade_image_i2v_conditioning(first_frames: torch.Tensor) -> torch.Tensor:
+        degraded = first_frames
+        if degraded.shape[-1] >= 3 and degraded.shape[-2] >= 3:
+            degraded = TF.gaussian_blur(degraded, kernel_size=[3, 3], sigma=[0.1, 1.0])
+
+        brightness = random.uniform(0.9, 1.1)
+        contrast = random.uniform(0.9, 1.1)
+        degraded = degraded * brightness
+        channel_mean = degraded.mean(dim=(-2, -1), keepdim=True)
+        degraded = (degraded - channel_mean) * contrast + channel_mean
+
+        noise = torch.randn_like(degraded) * 0.025
+        degraded = degraded + noise
+
+        return degraded.clamp(-1.0, 1.0)
+
+    @staticmethod
+    def _get_first_frames_from_batch(batch: DataLoaderBatchDTO) -> torch.Tensor:
+        frames = batch.tensor
+        if len(frames.shape) == 4:
+            return frames
+        if len(frames.shape) == 5:
+            return frames[:, 0]
+        raise ValueError(f"Unknown frame shape {frames.shape}")
+
+    @staticmethod
+    def _is_single_frame_batch(batch: DataLoaderBatchDTO) -> bool:
+        if batch is None:
+            return False
+
+        frames = getattr(batch, "tensor", None)
+        if frames is not None:
+            if len(frames.shape) == 4:
+                return True
+            if len(frames.shape) == 5:
+                return frames.shape[1] == 1
+
+        batch_num_frames = getattr(batch, "num_frames", None)
+        if batch_num_frames is not None:
+            return batch_num_frames == 1
+
+        return getattr(getattr(batch, "dataset_config", None), "num_frames", None) == 1
+
+    def _should_use_image_i2v_conditioning(self) -> bool:
+        return (
+            getattr(self, "image_i2v_conditioning", False)
+            and random.random() < getattr(self, "image_i2v_conditioning_prob", 0.2)
+        )
     
     
     def generate_single_image(
@@ -119,16 +182,14 @@ class Wan2214bI2VModel(Wan2214bModel):
     ):
         # videos come in (bs, num_frames, channels, height, width)
         # images come in (bs, channels, height, width)
-        should_skip_single_frame_i2v = (
-            force_t2i_single_frame
-            and batch is not None
-            and (
-                (hasattr(batch, "tensor") and len(batch.tensor.shape) == 4)
-                or getattr(getattr(batch, "dataset_config", None), "num_frames", None) == 1
-            )
+        is_single_frame_batch = self._is_single_frame_batch(batch)
+        should_use_degraded_image_conditioning = (
+            is_single_frame_batch
+            and not force_t2i_single_frame
+            and self._should_use_image_i2v_conditioning()
         )
 
-        if should_skip_single_frame_i2v:
+        if is_single_frame_batch and not should_use_degraded_image_conditioning:
             target_in_channels = getattr(
                 getattr(self.model, "patch_embedding", None), "in_channels", None
             )
@@ -155,13 +216,9 @@ class Wan2214bI2VModel(Wan2214bModel):
                 )
         else:
             with torch.no_grad():
-                frames = batch.tensor
-                if len(frames.shape) == 4:
-                    first_frames = frames
-                elif len(frames.shape) == 5:
-                    first_frames = frames[:, 0]
-                else:
-                    raise ValueError(f"Unknown frame shape {frames.shape}")
+                first_frames = self._get_first_frames_from_batch(batch)
+                if should_use_degraded_image_conditioning:
+                    first_frames = self.degrade_image_i2v_conditioning(first_frames)
 
                 # Add conditioning using the standalone function
                 conditioned_latent = add_first_frame_conditioning(

@@ -88,6 +88,11 @@ config:
           # you can train high noise, low noise, or both. With low vram it will automatically unload the one not being trained.
           train_high_noise: true
           train_low_noise: true
+          # Wan2.2 I2V only: opt in to mixed conditioning for image-only datasets.
+          # This keeps most single-image steps on zero conditioning for concept learning, while using degraded
+          # first-frame conditioning on some steps to reduce washed-out I2V inference with the trained LoRA.
+          # image_i2v_conditioning: true
+          # image_i2v_conditioning_prob: 0.2
       sample:
         sampler: "flowmatch"
         sample_every: 250 # sample every this many steps

@@ -36,7 +36,8 @@ type AdditionalSections =
   | 'model.high_noise_lora_merge_strength'
   | 'model.low_noise_lora_path'
   | 'model.low_noise_lora_merge_strength'
-  | 'model.assistant_lora_path';
+  | 'model.assistant_lora_path'
+  | 'model.image_i2v_conditioning';
 
 type ModelGroup = 'image' | 'instruction' | 'video' | 'experimental' | 'audio';
 
@@ -329,6 +330,7 @@ export const modelArchs: ModelArch[] = [
       'model.high_noise_lora_merge_strength',
       'model.low_noise_lora_path',
       'model.low_noise_lora_merge_strength',
+      'model.image_i2v_conditioning',
     ],
     accuracyRecoveryAdapters: {
       '4 bit with ARA': 'uint4|ostris/accuracy_recovery_adapters/wan22_14b_i2v_torchao_uint4.safetensors',

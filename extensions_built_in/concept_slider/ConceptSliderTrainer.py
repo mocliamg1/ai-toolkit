@@ -98,8 +98,15 @@ class ConceptSliderTrainer(DiffusionTrainer):
             return False
 
         batch_tensor = getattr(batch, "tensor", None)
-        if batch_tensor is not None and len(batch_tensor.shape) == 4:
-            return True
+        if batch_tensor is not None:
+            if len(batch_tensor.shape) == 4:
+                return True
+            if len(batch_tensor.shape) == 5:
+                return batch_tensor.shape[1] == 1
+
+        batch_num_frames = getattr(batch, "num_frames", None)
+        if batch_num_frames is not None:
+            return batch_num_frames == 1
 
         return getattr(getattr(batch, "dataset_config", None), "num_frames", None) == 1
 
