@@ -843,6 +843,36 @@ export default function SimpleJob({
                 options={quantizationOptions}
                 docKey="dual_model.t2v_model"
               />
+              <LoraMergeInput
+                label="T2V LoRA"
+                pathValue={jobConfig.config.process[0].dual_model?.t2v_model?.lora_path}
+                strengthValue={jobConfig.config.process[0].dual_model?.t2v_model?.lora_merge_strength}
+                pathKey="config.process[0].dual_model.t2v_model.lora_path"
+                strengthKey="config.process[0].dual_model.t2v_model.lora_merge_strength"
+                pathDocKey="dual_model.t2v_model.lora_path"
+                strengthDocKey="dual_model.t2v_model.lora_merge_strength"
+                setJobConfig={setJobConfig}
+              />
+              <LoraMergeInput
+                label="T2V High Noise LoRA"
+                pathValue={jobConfig.config.process[0].dual_model?.t2v_model?.high_noise_lora_path}
+                strengthValue={jobConfig.config.process[0].dual_model?.t2v_model?.high_noise_lora_merge_strength}
+                pathKey="config.process[0].dual_model.t2v_model.high_noise_lora_path"
+                strengthKey="config.process[0].dual_model.t2v_model.high_noise_lora_merge_strength"
+                pathDocKey="dual_model.t2v_model.high_noise_lora_path"
+                strengthDocKey="dual_model.t2v_model.high_noise_lora_merge_strength"
+                setJobConfig={setJobConfig}
+              />
+              <LoraMergeInput
+                label="T2V Low Noise LoRA"
+                pathValue={jobConfig.config.process[0].dual_model?.t2v_model?.low_noise_lora_path}
+                strengthValue={jobConfig.config.process[0].dual_model?.t2v_model?.low_noise_lora_merge_strength}
+                pathKey="config.process[0].dual_model.t2v_model.low_noise_lora_path"
+                strengthKey="config.process[0].dual_model.t2v_model.low_noise_lora_merge_strength"
+                pathDocKey="dual_model.t2v_model.low_noise_lora_path"
+                strengthDocKey="dual_model.t2v_model.low_noise_lora_merge_strength"
+                setJobConfig={setJobConfig}
+              />
               <Checkbox
                 label="Offload Inactive Model"
                 checked={jobConfig.config.process[0].dual_model?.offload_inactive_to_cpu ?? true}

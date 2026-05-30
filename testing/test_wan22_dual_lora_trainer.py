@@ -1,9 +1,12 @@
+from collections import OrderedDict
 from types import SimpleNamespace
 
 import pytest
 import torch
 
+from extensions_built_in.sd_trainer.SDTrainer import SDTrainer
 from extensions_built_in.sd_trainer.Wan22DualLoraTrainer import Wan22DualLoraTrainer
+from toolkit.config_modules import ModelConfig
 
 
 class _FakeLoraModule(torch.nn.Module):
@@ -86,6 +89,76 @@ def test_dual_schedule_repeats_i2v_then_t2v():
         "i2v",
         "i2v",
     ]
+
+
+def test_dual_t2v_model_config_preserves_base_lora_merge_fields(monkeypatch):
+    def fake_sd_trainer_init(self, process_id, job, config, **kwargs):
+        self.model_config = ModelConfig(**config["model"])
+        self.train_config = SimpleNamespace(
+            dtype="bf16",
+            train_text_encoder=False,
+            train_refiner=False,
+        )
+        self.network_config = SimpleNamespace(type="lora")
+        self.adapter_config = None
+        self.embed_config = None
+        self.decorator_config = None
+
+        def fake_get_conf(key, default=None, required=False):
+            if required and key not in config:
+                raise ValueError(f"Missing required config key {key}")
+            return config.get(key, default)
+
+        self.get_conf = fake_get_conf
+
+    monkeypatch.setattr(SDTrainer, "__init__", fake_sd_trainer_init)
+
+    config = OrderedDict(
+        {
+            "model": {
+                "name_or_path": "ai-toolkit/Wan2.2-I2V-A14B-Diffusers-bf16",
+                "arch": "wan22_14b_i2v_t2v",
+                "model_kwargs": {
+                    "train_high_noise": True,
+                    "train_low_noise": True,
+                },
+            },
+            "dual_model": {
+                "t2v_model": {
+                    "name_or_path": "ai-toolkit/Wan2.2-T2V-A14B-Diffusers-bf16",
+                    "arch": "wan22_14b",
+                    "lora_path": [{"path": "t2v_base.safetensors", "strength": 0.75}],
+                    "lora_merge_strength": 0.9,
+                    "high_noise_lora_path": "t2v_high.safetensors",
+                    "high_noise_lora_merge_strength": 0.8,
+                    "low_noise_lora_path": [
+                        {"path": "t2v_low_a.safetensors", "strength": 0.7},
+                        {"path": "t2v_low_b.safetensors", "strength": 0.6},
+                    ],
+                    "low_noise_lora_merge_strength": 0.5,
+                    "model_kwargs": {
+                        "train_high_noise": True,
+                        "train_low_noise": True,
+                    },
+                },
+            },
+        }
+    )
+
+    trainer = Wan22DualLoraTrainer(0, object(), config)
+
+    assert trainer.model_config.arch == "wan22_14b_i2v"
+    assert trainer.dual_t2v_model_config.lora_path == [
+        {"path": "t2v_base.safetensors", "strength": 0.75}
+    ]
+    assert trainer.dual_t2v_model_config.lora_merge_strength == 0.9
+    assert trainer.dual_t2v_model_config.high_noise_lora_path == "t2v_high.safetensors"
+    assert trainer.dual_t2v_model_config.high_noise_lora_merge_strength == 0.8
+    assert trainer.dual_t2v_model_config.low_noise_lora_path == [
+        {"path": "t2v_low_a.safetensors", "strength": 0.7},
+        {"path": "t2v_low_b.safetensors", "strength": 0.6},
+    ]
+    assert trainer.dual_t2v_model_config.low_noise_lora_merge_strength == 0.5
 
 
 def test_tie_secondary_lora_parameters_shares_matching_parameter_objects():

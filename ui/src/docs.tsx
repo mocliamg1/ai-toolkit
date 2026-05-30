@@ -230,6 +230,60 @@ const docs: { [key: string]: ConfigDoc } = {
       </>
     ),
   },
+  'dual_model.t2v_model.lora_path': {
+    title: 'T2V Base Merge LoRA Path',
+    description: (
+      <>
+        Optional LoRA path, path list, or path/strength list merged into the secondary Wan 2.2 T2V base model before
+        dual training starts. Explicit high-noise or low-noise T2V paths take precedence over this field.
+      </>
+    ),
+  },
+  'dual_model.t2v_model.lora_merge_strength': {
+    title: 'T2V Base Merge LoRA Strength',
+    description: (
+      <>
+        Default strength applied when merging <code>dual_model.t2v_model.lora_path</code> entries into the secondary T2V
+        base model. Default is <code>1.0</code>.
+      </>
+    ),
+  },
+  'dual_model.t2v_model.high_noise_lora_path': {
+    title: 'T2V High-Noise LoRA Path',
+    description: (
+      <>
+        Optional explicit Wan 2.2 base-merge input for the secondary T2V high-noise stage. This can be a single path,
+        a path list, or path/strength objects.
+      </>
+    ),
+  },
+  'dual_model.t2v_model.high_noise_lora_merge_strength': {
+    title: 'T2V High-Noise LoRA Strength',
+    description: (
+      <>
+        Default strength applied when merging <code>dual_model.t2v_model.high_noise_lora_path</code> entries into the
+        secondary T2V high-noise stage. Default is <code>1.0</code>.
+      </>
+    ),
+  },
+  'dual_model.t2v_model.low_noise_lora_path': {
+    title: 'T2V Low-Noise LoRA Path',
+    description: (
+      <>
+        Optional explicit Wan 2.2 base-merge input for the secondary T2V low-noise stage. This can be a single path,
+        a path list, or path/strength objects.
+      </>
+    ),
+  },
+  'dual_model.t2v_model.low_noise_lora_merge_strength': {
+    title: 'T2V Low-Noise LoRA Strength',
+    description: (
+      <>
+        Default strength applied when merging <code>dual_model.t2v_model.low_noise_lora_path</code> entries into the
+        secondary T2V low-noise stage. Default is <code>1.0</code>.
+      </>
+    ),
+  },
   'dual_model.offload_inactive_to_cpu': {
     title: 'Offload Inactive Model',
     description: (

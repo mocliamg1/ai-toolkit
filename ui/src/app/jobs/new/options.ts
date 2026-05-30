@@ -398,6 +398,9 @@ export const modelArchs: ModelArch[] = [
             quantize_te: true,
             qtype_te: defaultQtype,
             low_vram: true,
+            lora_merge_strength: 1.0,
+            high_noise_lora_merge_strength: 1.0,
+            low_noise_lora_merge_strength: 1.0,
             model_kwargs: {
               train_high_noise: true,
               train_low_noise: true,
