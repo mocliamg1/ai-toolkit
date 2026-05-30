@@ -205,6 +205,40 @@ const docs: { [key: string]: ConfigDoc } = {
       </>
     ),
   },
+  'dual_model.i2v_steps': {
+    title: 'I2V Steps',
+    description: (
+      <>
+        Number of optimizer steps to train the shared LoRA on the Wan 2.2 I2V model before switching to the T2V model.
+      </>
+    ),
+  },
+  'dual_model.t2v_steps': {
+    title: 'T2V Steps',
+    description: (
+      <>
+        Number of optimizer steps to train the same shared LoRA on the Wan 2.2 T2V model before switching back to I2V.
+      </>
+    ),
+  },
+  'dual_model.t2v_model': {
+    title: 'T2V Model',
+    description: (
+      <>
+        Secondary Wan 2.2 T2V model used as a color and text-to-video regularizer while training the same LoRA weights
+        as the primary I2V model.
+      </>
+    ),
+  },
+  'dual_model.offload_inactive_to_cpu': {
+    title: 'Offload Inactive Model',
+    description: (
+      <>
+        Moves the inactive I2V or T2V base transformers to CPU memory during dual-mode training. The shared LoRA
+        parameters remain active for optimizer updates.
+      </>
+    ),
+  },
   'datasets.control_path': {
     title: 'Control Dataset',
     description: (

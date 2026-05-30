@@ -34,6 +34,16 @@ export const handleModelArchChange = (
 
   // update the defaults when a model is selected
   const newArch = modelArchs.find(model => model.name === newArchName);
+  const isCurrentDualLora =
+    currentArch?.name === 'wan22_14b_i2v_t2v' || jobConfig.config.process[0].type === 'wan22_dual_lora_trainer';
+  const isNewDualLora = newArch?.name === 'wan22_14b_i2v_t2v';
+
+  if (isNewDualLora) {
+    setJobConfig('wan22_dual_lora_trainer', 'config.process[0].type');
+  } else if (isCurrentDualLora) {
+    setJobConfig('diffusion_trainer', 'config.process[0].type');
+    setJobConfig(undefined, 'config.process[0].dual_model');
+  }
 
   // update vram setting
   if (!newArch?.additionalSections?.includes('model.low_vram')) {

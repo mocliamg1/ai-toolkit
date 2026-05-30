@@ -38,7 +38,8 @@ type AdditionalSections =
   | 'model.low_noise_lora_merge_strength'
   | 'model.assistant_lora_path'
   | 'model.image_i2v_conditioning'
-  | 'model.image_i2v_clip_training';
+  | 'model.image_i2v_clip_training'
+  | 'model.dual_lora';
 
 type ModelGroup = 'image' | 'instruction' | 'video' | 'experimental' | 'audio';
 
@@ -68,6 +69,15 @@ export interface ModelArch {
 
 const defaultNameOrPath = '';
 const defaultLinearRank = 32;
+export const defaultQtype = 'qfloat8';
+
+export const wan22T2VAccuracyRecoveryAdapters = {
+  '4 bit with ARA': 'uint4|ostris/accuracy_recovery_adapters/wan22_14b_t2i_torchao_uint4.safetensors',
+};
+
+export const wan22I2VAccuracyRecoveryAdapters = {
+  '4 bit with ARA': 'uint4|ostris/accuracy_recovery_adapters/wan22_14b_i2v_torchao_uint4.safetensors',
+};
 
 export const modelArchs: ModelArch[] = [
   {
@@ -289,10 +299,7 @@ export const modelArchs: ModelArch[] = [
       'model.low_noise_lora_path',
       'model.low_noise_lora_merge_strength',
     ],
-    accuracyRecoveryAdapters: {
-      // '3 bit with ARA': 'uint3|ostris/accuracy_recovery_adapters/wan22_14b_t2i_torchao_uint3.safetensors',
-      '4 bit with ARA': 'uint4|ostris/accuracy_recovery_adapters/wan22_14b_t2i_torchao_uint4.safetensors',
-    },
+    accuracyRecoveryAdapters: wan22T2VAccuracyRecoveryAdapters,
   },
   {
     name: 'wan22_14b_i2v',
@@ -342,9 +349,82 @@ export const modelArchs: ModelArch[] = [
       'model.image_i2v_conditioning',
       'model.image_i2v_clip_training',
     ],
-    accuracyRecoveryAdapters: {
-      '4 bit with ARA': 'uint4|ostris/accuracy_recovery_adapters/wan22_14b_i2v_torchao_uint4.safetensors',
+    accuracyRecoveryAdapters: wan22I2VAccuracyRecoveryAdapters,
+  },
+  {
+    name: 'wan22_14b_i2v_t2v',
+    label: 'Wan 2.2 I2V+T2V Shared LoRA (14B)',
+    group: 'video',
+    isVideoModel: true,
+    defaults: {
+      'config.process[0].type': ['wan22_dual_lora_trainer', 'diffusion_trainer'],
+      'config.process[0].model.name_or_path': ['ai-toolkit/Wan2.2-I2V-A14B-Diffusers-bf16', defaultNameOrPath],
+      'config.process[0].model.quantize': [true, false],
+      'config.process[0].model.quantize_te': [true, false],
+      'config.process[0].model.low_vram': [true, false],
+      'config.process[0].sample.sampler': ['flowmatch', 'flowmatch'],
+      'config.process[0].train.noise_scheduler': ['flowmatch', 'flowmatch'],
+      'config.process[0].sample.num_frames': [41, 1],
+      'config.process[0].sample.fps': [16, 1],
+      'config.process[0].train.timestep_type': ['linear', 'sigmoid'],
+      'config.process[0].train.cache_text_embeddings': [true, false],
+      'config.process[0].train.train_text_encoder': [false, false],
+      'config.process[0].train.switch_boundary_every': [10, 1],
+      'config.process[0].model.lora_merge_strength': [1.0, undefined],
+      'config.process[0].model.high_noise_lora_merge_strength': [1.0, undefined],
+      'config.process[0].model.low_noise_lora_merge_strength': [1.0, undefined],
+      'config.process[0].model.model_kwargs': [
+        {
+          train_high_noise: true,
+          train_low_noise: true,
+          image_i2v_clip_training: false,
+          image_i2v_clip_training_prob: 0.25,
+          image_i2v_clip_num_frames: 5,
+          image_i2v_clip_blur_sigma: 24.0,
+          image_i2v_clip_downscale_factor: 0.0625,
+        },
+        {},
+      ],
+      'config.process[0].dual_model': [
+        {
+          i2v_steps: 8,
+          t2v_steps: 2,
+          offload_inactive_to_cpu: true,
+          t2v_model: {
+            name_or_path: 'ai-toolkit/Wan2.2-T2V-A14B-Diffusers-bf16',
+            arch: 'wan22_14b',
+            quantize: true,
+            qtype: defaultQtype,
+            quantize_te: true,
+            qtype_te: defaultQtype,
+            low_vram: true,
+            model_kwargs: {
+              train_high_noise: true,
+              train_low_noise: true,
+            },
+          },
+        },
+        undefined,
+      ],
     },
+    disableSections: ['network.conv'],
+    additionalSections: [
+      'sample.ctrl_img',
+      'datasets.num_frames',
+      'model.low_vram',
+      'model.multistage',
+      'model.layer_offloading',
+      'model.lora_path',
+      'model.lora_merge_strength',
+      'model.high_noise_lora_path',
+      'model.high_noise_lora_merge_strength',
+      'model.low_noise_lora_path',
+      'model.low_noise_lora_merge_strength',
+      'model.image_i2v_conditioning',
+      'model.image_i2v_clip_training',
+      'model.dual_lora',
+    ],
+    accuracyRecoveryAdapters: wan22I2VAccuracyRecoveryAdapters,
   },
   {
     name: 'wan22_5b',
@@ -1015,8 +1095,6 @@ export const quantizationOptions: SelectOption[] = [
   { value: 'uint2', label: '2 bit' },
 ];
 
-export const defaultQtype = 'qfloat8';
-
 interface JobTypeOption extends SelectOption {
   disableSections?: DisableableSections[];
   processSections?: string[];
@@ -1028,6 +1106,11 @@ export const jobTypeOptions: JobTypeOption[] = [
   {
     value: 'diffusion_trainer',
     label: 'LoRA Trainer',
+    disableSections: ['slider'],
+  },
+  {
+    value: 'wan22_dual_lora_trainer',
+    label: 'Wan2.2 Dual LoRA Trainer',
     disableSections: ['slider'],
   },
   {

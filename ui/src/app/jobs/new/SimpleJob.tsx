@@ -8,6 +8,7 @@ import {
   defaultQtype,
   jobTypeOptions,
   SampleTags,
+  wan22T2VAccuracyRecoveryAdapters,
 } from './options';
 import { defaultDatasetConfig } from './jobConfig';
 import { GroupedSelectOption, JobConfig, LoraMergePathValue, SelectOption } from '@/types';
@@ -372,6 +373,30 @@ export default function SimpleJob({
     return newQuantizationOptions;
   }, [modelArch]);
 
+  const t2vTransformerQuantizationOptions: GroupedSelectOption[] = useMemo(() => {
+    const araOptions = Object.entries(wan22T2VAccuracyRecoveryAdapters).map(([label, value]) => ({ value, label }));
+    const additionalOptions = quantizationOptions.slice(2);
+    const groups: GroupedSelectOption[] = [
+      {
+        label: 'Standard',
+        options: [quantizationOptions[0], quantizationOptions[1]],
+      },
+    ];
+    if (araOptions.length > 0) {
+      groups.push({
+        label: 'Accuracy Recovery Adapters',
+        options: araOptions,
+      });
+    }
+    if (additionalOptions.length > 0) {
+      groups.push({
+        label: 'Additional Quantization Options',
+        options: additionalOptions,
+      });
+    }
+    return groups;
+  }, []);
+
   const showGPUSelect = !isMac();
 
   let numDatasetCols = 4;
@@ -618,12 +643,22 @@ export default function SimpleJob({
                 <Checkbox
                   label="High Noise"
                   checked={jobConfig.config.process[0].model.model_kwargs?.train_high_noise || false}
-                  onChange={value => setJobConfig(value, 'config.process[0].model.model_kwargs.train_high_noise')}
+                  onChange={value => {
+                    setJobConfig(value, 'config.process[0].model.model_kwargs.train_high_noise');
+                    if (modelArch?.additionalSections?.includes('model.dual_lora')) {
+                      setJobConfig(value, 'config.process[0].dual_model.t2v_model.model_kwargs.train_high_noise');
+                    }
+                  }}
                 />
                 <Checkbox
                   label="Low Noise"
                   checked={jobConfig.config.process[0].model.model_kwargs?.train_low_noise || false}
-                  onChange={value => setJobConfig(value, 'config.process[0].model.model_kwargs.train_low_noise')}
+                  onChange={value => {
+                    setJobConfig(value, 'config.process[0].model.model_kwargs.train_low_noise');
+                    if (modelArch?.additionalSections?.includes('model.dual_lora')) {
+                      setJobConfig(value, 'config.process[0].dual_model.t2v_model.model_kwargs.train_low_noise');
+                    }
+                  }}
                 />
               </FormGroup>
               <NumberInput
@@ -739,6 +774,81 @@ export default function SimpleJob({
                   )}
                 </FormGroup>
               )}
+            </Card>
+          )}
+          {modelArch?.additionalSections?.includes('model.dual_lora') && (
+            <Card title="Dual Mode" className={secondaryTopCardClass}>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <NumberInput
+                  label="I2V Steps"
+                  value={jobConfig.config.process[0].dual_model?.i2v_steps ?? 8}
+                  onChange={value => setJobConfig(value, 'config.process[0].dual_model.i2v_steps')}
+                  min={1}
+                  required
+                  docKey="dual_model.i2v_steps"
+                />
+                <NumberInput
+                  label="T2V Steps"
+                  value={jobConfig.config.process[0].dual_model?.t2v_steps ?? 2}
+                  onChange={value => setJobConfig(value, 'config.process[0].dual_model.t2v_steps')}
+                  min={1}
+                  required
+                  docKey="dual_model.t2v_steps"
+                />
+              </div>
+              <TextInput
+                label="T2V Model Path"
+                value={jobConfig.config.process[0].dual_model?.t2v_model?.name_or_path ?? ''}
+                onChange={(value: string | null) => {
+                  setJobConfig(value, 'config.process[0].dual_model.t2v_model.name_or_path');
+                }}
+                placeholder="eg. ai-toolkit/Wan2.2-T2V-A14B-Diffusers-bf16"
+                docKey="dual_model.t2v_model"
+              />
+              <SelectInput
+                label="T2V Transformer"
+                value={
+                  jobConfig.config.process[0].dual_model?.t2v_model?.quantize
+                    ? (jobConfig.config.process[0].dual_model?.t2v_model?.qtype ?? defaultQtype)
+                    : ''
+                }
+                onChange={value => {
+                  if (value === '') {
+                    setJobConfig(false, 'config.process[0].dual_model.t2v_model.quantize');
+                    value = defaultQtype;
+                  } else {
+                    setJobConfig(true, 'config.process[0].dual_model.t2v_model.quantize');
+                  }
+                  setJobConfig(value, 'config.process[0].dual_model.t2v_model.qtype');
+                }}
+                options={t2vTransformerQuantizationOptions}
+                docKey="dual_model.t2v_model"
+              />
+              <SelectInput
+                label="T2V Text Encoder"
+                value={
+                  jobConfig.config.process[0].dual_model?.t2v_model?.quantize_te
+                    ? (jobConfig.config.process[0].dual_model?.t2v_model?.qtype_te ?? defaultQtype)
+                    : ''
+                }
+                onChange={value => {
+                  if (value === '') {
+                    setJobConfig(false, 'config.process[0].dual_model.t2v_model.quantize_te');
+                    value = defaultQtype;
+                  } else {
+                    setJobConfig(true, 'config.process[0].dual_model.t2v_model.quantize_te');
+                  }
+                  setJobConfig(value, 'config.process[0].dual_model.t2v_model.qtype_te');
+                }}
+                options={quantizationOptions}
+                docKey="dual_model.t2v_model"
+              />
+              <Checkbox
+                label="Offload Inactive Model"
+                checked={jobConfig.config.process[0].dual_model?.offload_inactive_to_cpu ?? true}
+                onChange={value => setJobConfig(value, 'config.process[0].dual_model.offload_inactive_to_cpu')}
+                docKey="dual_model.offload_inactive_to_cpu"
+              />
             </Card>
           )}
           <Card title="Target" className={secondaryTopCardClass}>

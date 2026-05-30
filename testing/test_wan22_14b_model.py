@@ -637,3 +637,45 @@ def test_legacy_split_merge_entrypoint_uses_legacy_strength_for_each_spec(monkey
 
     assert calls["loaded_weights"] == [[HIGH_STAGE_LORA_KEY], [LOW_STAGE_LORA_KEY]]
     assert calls["merge_in"] == [0.9, 0.9]
+
+
+def test_save_lora_high_only_writes_high_noise_file(monkeypatch):
+    model = _make_model(train_high_noise=True, train_low_noise=False)
+    model.network = SimpleNamespace(
+        network_config=SimpleNamespace(split_multistage_loras=True)
+    )
+    saved = {}
+
+    def fake_save_file(state_dict, path, metadata=None):
+        saved[path] = state_dict
+
+    monkeypatch.setattr(wan22_module, "save_file", fake_save_file)
+
+    state_dict = {
+        "diffusion_model.blocks.0.attn.to_q.lora_down.weight": torch.zeros(1),
+    }
+    model.save_lora(state_dict, "/tmp/test.safetensors")
+
+    assert list(saved.keys()) == ["/tmp/test_high_noise.safetensors"]
+    assert saved["/tmp/test_high_noise.safetensors"] == state_dict
+
+
+def test_save_lora_low_only_writes_low_noise_file(monkeypatch):
+    model = _make_model(train_high_noise=False, train_low_noise=True)
+    model.network = SimpleNamespace(
+        network_config=SimpleNamespace(split_multistage_loras=True)
+    )
+    saved = {}
+
+    def fake_save_file(state_dict, path, metadata=None):
+        saved[path] = state_dict
+
+    monkeypatch.setattr(wan22_module, "save_file", fake_save_file)
+
+    state_dict = {
+        "diffusion_model.blocks.0.attn.to_q.lora_down.weight": torch.zeros(1),
+    }
+    model.save_lora(state_dict, "/tmp/test.safetensors")
+
+    assert list(saved.keys()) == ["/tmp/test_low_noise.safetensors"]
+    assert saved["/tmp/test_low_noise.safetensors"] == state_dict

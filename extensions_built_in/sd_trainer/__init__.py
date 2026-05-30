@@ -56,6 +56,17 @@ class DiffusionTrainerExtension(Extension):
         return DiffusionTrainer
 
 
+class Wan22DualLoraTrainerExtension(Extension):
+    uid = "wan22_dual_lora_trainer"
+    name = "Wan2.2 Dual LoRA Trainer"
+
+    @classmethod
+    def get_process(cls):
+        from .Wan22DualLoraTrainer import Wan22DualLoraTrainer
+
+        return Wan22DualLoraTrainer
+
+
 # for backwards compatability
 class TextualInversionTrainer(SDTrainerExtension):
     uid = "textual_inversion_trainer"
@@ -67,4 +78,5 @@ AI_TOOLKIT_EXTENSIONS = [
     TextualInversionTrainer,
     UITrainerExtension,
     DiffusionTrainerExtension,
+    Wan22DualLoraTrainerExtension,
 ]

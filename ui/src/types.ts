@@ -186,6 +186,13 @@ export interface ModelConfig {
   assistant_lora_path?: string;
 }
 
+export interface DualModelConfig {
+  t2v_model: ModelConfig;
+  i2v_steps: number;
+  t2v_steps: number;
+  offload_inactive_to_cpu: boolean;
+}
+
 export interface SampleItem {
   prompt: string;
   width?: number;
@@ -248,6 +255,7 @@ export interface ProcessConfig {
   train: TrainConfig;
   logging: LoggingConfig;
   model: ModelConfig;
+  dual_model?: DualModelConfig;
   sample: SampleConfig;
 }
 
