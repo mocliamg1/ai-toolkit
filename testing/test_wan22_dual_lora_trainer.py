@@ -91,6 +91,42 @@ def test_dual_schedule_repeats_i2v_then_t2v():
     ]
 
 
+def test_normalize_process_config_defaults_train_refiner_false():
+    config = OrderedDict(
+        {
+            "model": {
+                "name_or_path": "ai-toolkit/Wan2.2-I2V-A14B-Diffusers-bf16",
+                "arch": "wan22_14b_i2v_t2v",
+            },
+            "train": {},
+        }
+    )
+
+    normalized = Wan22DualLoraTrainer.normalize_process_config(config)
+
+    assert normalized["model"]["arch"] == "wan22_14b_i2v"
+    assert normalized["train"]["train_refiner"] is False
+    assert "train_refiner" not in config["train"]
+
+
+def test_normalize_process_config_preserves_explicit_train_refiner_value():
+    config = OrderedDict(
+        {
+            "model": {
+                "name_or_path": "ai-toolkit/Wan2.2-I2V-A14B-Diffusers-bf16",
+                "arch": "wan22_14b_i2v_t2v",
+            },
+            "train": {
+                "train_refiner": True,
+            },
+        }
+    )
+
+    normalized = Wan22DualLoraTrainer.normalize_process_config(config)
+
+    assert normalized["train"]["train_refiner"] is True
+
+
 def test_dual_t2v_model_config_preserves_base_lora_merge_fields(monkeypatch):
     def fake_sd_trainer_init(self, process_id, job, config, **kwargs):
         self.model_config = ModelConfig(**config["model"])

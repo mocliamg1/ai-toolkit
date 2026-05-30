@@ -369,6 +369,7 @@ export const modelArchs: ModelArch[] = [
       'config.process[0].train.timestep_type': ['linear', 'sigmoid'],
       'config.process[0].train.cache_text_embeddings': [true, false],
       'config.process[0].train.train_text_encoder': [false, false],
+      'config.process[0].train.train_refiner': [false, false],
       'config.process[0].train.switch_boundary_every': [10, 1],
       'config.process[0].model.lora_merge_strength': [1.0, undefined],
       'config.process[0].model.high_noise_lora_merge_strength': [1.0, undefined],

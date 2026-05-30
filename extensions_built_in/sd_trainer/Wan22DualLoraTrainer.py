@@ -23,6 +23,8 @@ class Wan22DualLoraTrainer(SDTrainer):
         model_config = normalized.get("model", {})
         if model_config.get("arch") == "wan22_14b_i2v_t2v":
             model_config["arch"] = "wan22_14b_i2v"
+        train_config = normalized.setdefault("train", {})
+        train_config.setdefault("train_refiner", False)
         return normalized
 
     def __init__(self, process_id: int, job, config: OrderedDict, **kwargs):
