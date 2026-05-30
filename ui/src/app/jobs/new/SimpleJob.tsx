@@ -230,9 +230,14 @@ export default function SimpleJob({
 }: Props) {
   const [customResolutionInputs, setCustomResolutionInputs] = useState<Record<number, string>>({});
 
+  const selectedModelArchName =
+    jobConfig.config.process[0].type === 'wan22_dual_lora_trainer'
+      ? 'wan22_14b_i2v_t2v'
+      : jobConfig.config.process[0].model.arch;
+
   const modelArch = useMemo(() => {
-    return modelArchs.find(a => a.name === jobConfig.config.process[0].model.arch) as ModelArch;
-  }, [jobConfig.config.process[0].model.arch]);
+    return modelArchs.find(a => a.name === selectedModelArchName) as ModelArch;
+  }, [selectedModelArchName]);
 
   const jobType = useMemo(() => {
     return jobTypeOptions.find(j => j.value === jobConfig.config.process[0].type);
@@ -474,9 +479,9 @@ export default function SimpleJob({
           <Card title="Model" className={modelCardClass}>
             <SelectInput
               label="Model Architecture"
-              value={jobConfig.config.process[0].model.arch}
+              value={selectedModelArchName}
               onChange={value => {
-                handleModelArchChange(jobConfig.config.process[0].model.arch, value, jobConfig, setJobConfig);
+                handleModelArchChange(selectedModelArchName, value, jobConfig, setJobConfig);
               }}
               options={groupedModelOptions}
             />
@@ -879,55 +884,51 @@ export default function SimpleJob({
                 onChange={value => setJobConfig(value, 'config.process[0].dual_model.offload_inactive_to_cpu')}
                 docKey="dual_model.offload_inactive_to_cpu"
               />
-              {!isMac() && (
-                <>
-                  <Checkbox
-                    label={
-                      <>
-                        T2V Layer Offloading <IoFlaskSharp className="inline text-yellow-500" name="Experimental" />{' '}
-                      </>
+              <Checkbox
+                label={
+                  <>
+                    T2V Layer Offloading <IoFlaskSharp className="inline text-yellow-500" name="Experimental" />{' '}
+                  </>
+                }
+                checked={jobConfig.config.process[0].dual_model?.t2v_model?.layer_offloading || false}
+                onChange={value => setJobConfig(value, 'config.process[0].dual_model.t2v_model.layer_offloading')}
+                docKey="dual_model.t2v_model.layer_offloading"
+              />
+              {jobConfig.config.process[0].dual_model?.t2v_model?.layer_offloading && (
+                <div className="pt-2">
+                  <SliderInput
+                    label="T2V Transformer Offload %"
+                    value={Math.round(
+                      (jobConfig.config.process[0].dual_model?.t2v_model?.layer_offloading_transformer_percent ?? 1) *
+                        100,
+                    )}
+                    onChange={value =>
+                      setJobConfig(
+                        value * 0.01,
+                        'config.process[0].dual_model.t2v_model.layer_offloading_transformer_percent',
+                      )
                     }
-                    checked={jobConfig.config.process[0].dual_model?.t2v_model?.layer_offloading || false}
-                    onChange={value => setJobConfig(value, 'config.process[0].dual_model.t2v_model.layer_offloading')}
-                    docKey="dual_model.t2v_model.layer_offloading"
+                    min={0}
+                    max={100}
+                    step={1}
                   />
-                  {jobConfig.config.process[0].dual_model?.t2v_model?.layer_offloading && (
-                    <div className="pt-2">
-                      <SliderInput
-                        label="T2V Transformer Offload %"
-                        value={Math.round(
-                          (jobConfig.config.process[0].dual_model?.t2v_model
-                            ?.layer_offloading_transformer_percent ?? 1) * 100,
-                        )}
-                        onChange={value =>
-                          setJobConfig(
-                            value * 0.01,
-                            'config.process[0].dual_model.t2v_model.layer_offloading_transformer_percent',
-                          )
-                        }
-                        min={0}
-                        max={100}
-                        step={1}
-                      />
-                      <SliderInput
-                        label="T2V Text Encoder Offload %"
-                        value={Math.round(
-                          (jobConfig.config.process[0].dual_model?.t2v_model
-                            ?.layer_offloading_text_encoder_percent ?? 1) * 100,
-                        )}
-                        onChange={value =>
-                          setJobConfig(
-                            value * 0.01,
-                            'config.process[0].dual_model.t2v_model.layer_offloading_text_encoder_percent',
-                          )
-                        }
-                        min={0}
-                        max={100}
-                        step={1}
-                      />
-                    </div>
-                  )}
-                </>
+                  <SliderInput
+                    label="T2V Text Encoder Offload %"
+                    value={Math.round(
+                      (jobConfig.config.process[0].dual_model?.t2v_model
+                        ?.layer_offloading_text_encoder_percent ?? 1) * 100,
+                    )}
+                    onChange={value =>
+                      setJobConfig(
+                        value * 0.01,
+                        'config.process[0].dual_model.t2v_model.layer_offloading_text_encoder_percent',
+                      )
+                    }
+                    min={0}
+                    max={100}
+                    step={1}
+                  />
+                </div>
               )}
             </Card>
           )}
