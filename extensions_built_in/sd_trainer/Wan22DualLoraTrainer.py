@@ -23,6 +23,16 @@ class Wan22DualLoraTrainer(SDTrainer):
         model_config = normalized.get("model", {})
         if model_config.get("arch") == "wan22_14b_i2v_t2v":
             model_config["arch"] = "wan22_14b_i2v"
+        model_config.setdefault("model_kwargs", {}).setdefault(
+            "load_trainable_stages_only", True
+        )
+        dual_model_config = normalized.get("dual_model", {})
+        if isinstance(dual_model_config, dict):
+            t2v_model_config = dual_model_config.get("t2v_model", {})
+            if isinstance(t2v_model_config, dict):
+                t2v_model_config.setdefault("model_kwargs", {}).setdefault(
+                    "load_trainable_stages_only", True
+                )
         train_config = normalized.setdefault("train", {})
         train_config.setdefault("train_refiner", False)
         return normalized
@@ -429,9 +439,20 @@ class Wan22DualLoraTrainer(SDTrainer):
     def sample(self, *args, **kwargs):
         if self.primary_sd is not None and self.primary_network is not None:
             self._activate_dual_mode("i2v")
+        if self._is_primary_single_stage_loaded():
+            print_acc("Skipping sample because Wan2.2 dual single-stage training only loads the trainable stage")
+            return
         return super().sample(*args, **kwargs)
 
     def save(self, *args, **kwargs):
         if self.primary_sd is not None and self.primary_network is not None:
             self._activate_dual_mode("i2v")
         return super().save(*args, **kwargs)
+
+    def _is_primary_single_stage_loaded(self) -> bool:
+        if self.primary_sd is None:
+            return False
+        model = getattr(self.primary_sd, "model", None)
+        if model is None:
+            return False
+        return getattr(model, "transformer_1", None) is None or getattr(model, "transformer_2", None) is None

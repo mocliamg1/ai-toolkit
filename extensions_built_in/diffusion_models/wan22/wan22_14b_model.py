@@ -72,22 +72,22 @@ scheduler_configUniPC = {
 class DualWanTransformer3DModel(torch.nn.Module):
     def __init__(
         self,
-        transformer_1: WanTransformer3DModel,
-        transformer_2: WanTransformer3DModel,
+        transformer_1: Optional[WanTransformer3DModel],
+        transformer_2: Optional[WanTransformer3DModel],
         torch_dtype: Optional[Union[str, torch.dtype]] = None,
         device: Optional[Union[str, torch.device]] = None,
         boundary_ratio: float = boundary_ratio_t2v,
         low_vram: bool = False,
     ) -> None:
         super().__init__()
-        self.transformer_1: WanTransformer3DModel = transformer_1
-        self.transformer_2: WanTransformer3DModel = transformer_2
+        self.transformer_1: Optional[WanTransformer3DModel] = transformer_1
+        self.transformer_2: Optional[WanTransformer3DModel] = transformer_2
         self.torch_dtype: torch.dtype = torch_dtype
         self.device_torch: torch.device = device
         self.boundary_ratio: float = boundary_ratio
         self.boundary: float = self.boundary_ratio * 1000
         self.low_vram: bool = low_vram
-        self._active_transformer_name = "transformer_1"  # default to transformer_1
+        self._active_transformer_name = "transformer_1" if transformer_1 is not None else "transformer_2"
 
     @property
     def device(self) -> torch.device:
@@ -99,18 +99,23 @@ class DualWanTransformer3DModel(torch.nn.Module):
 
     @property
     def config(self):
-        return self.transformer_1.config
+        return self.transformer.config
 
     @property
     def transformer(self) -> WanTransformer3DModel:
-        return getattr(self, self._active_transformer_name)
+        transformer = getattr(self, self._active_transformer_name)
+        if transformer is None:
+            raise ValueError(f"Wan2.2 {self._active_transformer_name} is not loaded")
+        return transformer
 
     def enable_gradient_checkpointing(self):
         """
-        Enable gradient checkpointing for both transformers.
+        Enable gradient checkpointing for loaded transformers.
         """
-        self.transformer_1.enable_gradient_checkpointing()
-        self.transformer_2.enable_gradient_checkpointing()
+        if self.transformer_1 is not None:
+            self.transformer_1.enable_gradient_checkpointing()
+        if self.transformer_2 is not None:
+            self.transformer_2.enable_gradient_checkpointing()
 
     def forward(
         self,
@@ -133,9 +138,16 @@ class DualWanTransformer3DModel(torch.nn.Module):
             # check if we are changing the active transformer, if so, we need to swap the one in
             # vram if low_vram is enabled
             # todo swap the loras as well
+            if getattr(self, t_name) is None:
+                raise ValueError(
+                    f"Wan2.2 {t_name} is not loaded. Enable the matching train_high_noise/train_low_noise "
+                    "stage or disable sampling for single-stage training."
+                )
             if t_name != self._active_transformer_name:
                 if self.low_vram:
-                    getattr(self, self._active_transformer_name).to("cpu")
+                    active_transformer = getattr(self, self._active_transformer_name)
+                    if active_transformer is not None:
+                        active_transformer.to("cpu")
                     getattr(self, t_name).to(self.device_torch)
                     torch.cuda.empty_cache()
                 self._active_transformer_name = t_name
@@ -146,7 +158,9 @@ class DualWanTransformer3DModel(torch.nn.Module):
                 other_tname = (
                     "transformer_1" if t_name == "transformer_2" else "transformer_2"
                 )
-                getattr(self, other_tname).to("cpu")
+                other_transformer = getattr(self, other_tname)
+                if other_transformer is not None:
+                    other_transformer.to("cpu")
 
             self.transformer.to(hidden_states.device)
 
@@ -242,12 +256,14 @@ class Wan2214bModel(Wan21):
         self.pipeline.transformer_2 = self.model.transformer_2
 
         # patch the condition embedder
-        self.model.transformer_1.condition_embedder.forward = partial(
-            time_text_monkeypatch, self.model.transformer_1.condition_embedder
-        )
-        self.model.transformer_2.condition_embedder.forward = partial(
-            time_text_monkeypatch, self.model.transformer_2.condition_embedder
-        )
+        if self.model.transformer_1 is not None:
+            self.model.transformer_1.condition_embedder.forward = partial(
+                time_text_monkeypatch, self.model.transformer_1.condition_embedder
+            )
+        if self.model.transformer_2 is not None:
+            self.model.transformer_2.condition_embedder.forward = partial(
+                time_text_monkeypatch, self.model.transformer_2.condition_embedder
+            )
 
     def get_bucket_divisibility(self):
         # 8x compression  and 2x2 patch size
@@ -799,7 +815,21 @@ class Wan2214bModel(Wan21):
 
         self.print_and_status_update("Loading Wan2.2 base merge LoRA")
         for merge_spec in merge_specs:
-            lora_state_dict = merge_spec["state_dict"]
+            if not self._wan22_merge_spec_targets_loaded_stage(merge_spec, transformer):
+                self.print_and_status_update(
+                    f"Skipping Wan2.2 base LoRA for unloaded stage: {merge_spec['label']} "
+                    f"from {merge_spec['source_path']}"
+                )
+                continue
+            lora_state_dict = self._filter_wan22_lora_state_dict_for_loaded_stages(
+                merge_spec["state_dict"], transformer
+            )
+            if len(lora_state_dict) == 0:
+                self.print_and_status_update(
+                    f"Skipping Wan2.2 base LoRA with no loaded-stage tensors: {merge_spec['label']} "
+                    f"from {merge_spec['source_path']}"
+                )
+                continue
             merge_strength = merge_spec["strength"]
             network_config = self._infer_wan22_base_lora_network_config(lora_state_dict)
 
@@ -836,6 +866,37 @@ class Wan2214bModel(Wan21):
                 del network
                 flush()
 
+    @staticmethod
+    def _wan22_loaded_stage_names(transformer: DualWanTransformer3DModel) -> set[str]:
+        loaded_stages = set()
+        if transformer.transformer_1 is not None:
+            loaded_stages.add("transformer_1")
+        if transformer.transformer_2 is not None:
+            loaded_stages.add("transformer_2")
+        return loaded_stages
+
+    def _wan22_merge_spec_targets_loaded_stage(
+        self,
+        merge_spec: Dict[str, Any],
+        transformer: DualWanTransformer3DModel,
+    ) -> bool:
+        stage_name = merge_spec.get("stage_name")
+        return stage_name is None or stage_name in self._wan22_loaded_stage_names(transformer)
+
+    def _filter_wan22_lora_state_dict_for_loaded_stages(
+        self,
+        state_dict: Dict[str, torch.Tensor],
+        transformer: DualWanTransformer3DModel,
+    ) -> OrderedDict:
+        loaded_stages = self._wan22_loaded_stage_names(transformer)
+        filtered_state_dict = OrderedDict()
+        for key, value in state_dict.items():
+            key_stage_name = self._get_wan22_stage_name_from_key(key)
+            if key_stage_name is not None and key_stage_name not in loaded_stages:
+                continue
+            filtered_state_dict[key] = value
+        return filtered_state_dict
+
     def load_wan_transformer(self, transformer_path, subfolder=None):
         if self.model_config.split_model_over_gpus:
             raise ValueError(
@@ -867,41 +928,51 @@ class Wan2214bModel(Wan21):
             # we have a hf path, replace it with transformer_2 subfolder
             subfolder_2 = "transformer_2"
 
-        self.print_and_status_update("Loading transformer 1")
         dtype = self.torch_dtype
-        transformer_1 = WanTransformer3DModel.from_pretrained(
-            transformer_path_1,
-            subfolder=subfolder_1,
-            torch_dtype=dtype,
-        ).to(dtype=dtype)
+        transformer_1 = None
+        transformer_2 = None
 
-        flush()
+        load_trainable_stages_only = self.model_config.model_kwargs.get(
+            "load_trainable_stages_only", False
+        )
+        load_transformer_1 = self.train_high_noise or not load_trainable_stages_only
+        load_transformer_2 = self.train_low_noise or not load_trainable_stages_only
 
-        if self.model_config.low_vram:
-            # quantize on the device
-            transformer_1.to('cpu', dtype=dtype)
+        if load_transformer_1:
+            self.print_and_status_update("Loading transformer 1")
+            transformer_1 = WanTransformer3DModel.from_pretrained(
+                transformer_path_1,
+                subfolder=subfolder_1,
+                torch_dtype=dtype,
+            ).to(dtype=dtype)
+
             flush()
-        else:
-            transformer_1.to(self.device_torch, dtype=dtype)
+
+            if self.model_config.low_vram:
+                # quantize on the device
+                transformer_1.to('cpu', dtype=dtype)
+                flush()
+            else:
+                transformer_1.to(self.device_torch, dtype=dtype)
+                flush()
+
+        if load_transformer_2:
+            self.print_and_status_update("Loading transformer 2")
+            transformer_2 = WanTransformer3DModel.from_pretrained(
+                transformer_path_2,
+                subfolder=subfolder_2,
+                torch_dtype=dtype,
+            ).to(dtype=dtype)
+
             flush()
 
-        self.print_and_status_update("Loading transformer 2")
-        dtype = self.torch_dtype
-        transformer_2 = WanTransformer3DModel.from_pretrained(
-            transformer_path_2,
-            subfolder=subfolder_2,
-            torch_dtype=dtype,
-        ).to(dtype=dtype)
-
-        flush()
-
-        if self.model_config.low_vram:
-            # quantize on the device
-            transformer_2.to('cpu', dtype=dtype)
-            flush()
-        else:
-            transformer_2.to(self.device_torch, dtype=dtype)
-            flush()
+            if self.model_config.low_vram:
+                # quantize on the device
+                transformer_2.to('cpu', dtype=dtype)
+                flush()
+            else:
+                transformer_2.to(self.device_torch, dtype=dtype)
+                flush()
 
         layer_offloading_transformer = self.model_config.layer_offloading and self.model_config.layer_offloading_transformer_percent > 0
         # make the combined model
@@ -918,22 +989,28 @@ class Wan2214bModel(Wan21):
         self._merge_base_lora_into_wan22_transformer(transformer)
 
         if self.model_config.quantize and self.model_config.accuracy_recovery_adapter is None:
-            self.print_and_status_update("Quantizing Transformer 1")
-            quantize_model(self, transformer_1)
-            flush()
+            if transformer_1 is not None:
+                self.print_and_status_update("Quantizing Transformer 1")
+                quantize_model(self, transformer_1)
+                flush()
 
-            self.print_and_status_update("Quantizing Transformer 2")
-            quantize_model(self, transformer_2)
-            flush()
+            if transformer_2 is not None:
+                self.print_and_status_update("Quantizing Transformer 2")
+                quantize_model(self, transformer_2)
+                flush()
 
         if self.model_config.low_vram:
-            self.print_and_status_update("Moving transformer 1 to CPU")
-            transformer_1.to("cpu")
-            self.print_and_status_update("Moving transformer 2 to CPU")
-            transformer_2.to("cpu")
+            if transformer_1 is not None:
+                self.print_and_status_update("Moving transformer 1 to CPU")
+                transformer_1.to("cpu")
+            if transformer_2 is not None:
+                self.print_and_status_update("Moving transformer 2 to CPU")
+                transformer_2.to("cpu")
         else:
-            transformer_1.to(self.device_torch)
-            transformer_2.to(self.device_torch)
+            if transformer_1 is not None:
+                transformer_1.to(self.device_torch)
+            if transformer_2 is not None:
+                transformer_2.to(self.device_torch)
         
         if self.model_config.quantize and self.model_config.accuracy_recovery_adapter is not None:
             # apply the accuracy recovery adapter to both transformers
@@ -943,18 +1020,20 @@ class Wan2214bModel(Wan21):
             
         
         if layer_offloading_transformer:
-            MemoryManager.attach(
-                transformer_1,
-                self.device_torch,
-                offload_percent=self.model_config.layer_offloading_transformer_percent,
-                ignore_modules=[transformer_1.scale_shift_table] + [block.scale_shift_table for block in transformer_1.blocks]
-            )
-            MemoryManager.attach(
-                transformer_2,
-                self.device_torch,
-                offload_percent=self.model_config.layer_offloading_transformer_percent,
-                ignore_modules=[transformer_2.scale_shift_table] + [block.scale_shift_table for block in transformer_2.blocks]
-            )
+            if transformer_1 is not None:
+                MemoryManager.attach(
+                    transformer_1,
+                    self.device_torch,
+                    offload_percent=self.model_config.layer_offloading_transformer_percent,
+                    ignore_modules=[transformer_1.scale_shift_table] + [block.scale_shift_table for block in transformer_1.blocks]
+                )
+            if transformer_2 is not None:
+                MemoryManager.attach(
+                    transformer_2,
+                    self.device_torch,
+                    offload_percent=self.model_config.layer_offloading_transformer_percent,
+                    ignore_modules=[transformer_2.scale_shift_table] + [block.scale_shift_table for block in transformer_2.blocks]
+                )
 
         return transformer
 

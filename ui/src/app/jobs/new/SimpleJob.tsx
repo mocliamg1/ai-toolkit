@@ -879,6 +879,56 @@ export default function SimpleJob({
                 onChange={value => setJobConfig(value, 'config.process[0].dual_model.offload_inactive_to_cpu')}
                 docKey="dual_model.offload_inactive_to_cpu"
               />
+              {!isMac() && (
+                <>
+                  <Checkbox
+                    label={
+                      <>
+                        T2V Layer Offloading <IoFlaskSharp className="inline text-yellow-500" name="Experimental" />{' '}
+                      </>
+                    }
+                    checked={jobConfig.config.process[0].dual_model?.t2v_model?.layer_offloading || false}
+                    onChange={value => setJobConfig(value, 'config.process[0].dual_model.t2v_model.layer_offloading')}
+                    docKey="dual_model.t2v_model.layer_offloading"
+                  />
+                  {jobConfig.config.process[0].dual_model?.t2v_model?.layer_offloading && (
+                    <div className="pt-2">
+                      <SliderInput
+                        label="T2V Transformer Offload %"
+                        value={Math.round(
+                          (jobConfig.config.process[0].dual_model?.t2v_model
+                            ?.layer_offloading_transformer_percent ?? 1) * 100,
+                        )}
+                        onChange={value =>
+                          setJobConfig(
+                            value * 0.01,
+                            'config.process[0].dual_model.t2v_model.layer_offloading_transformer_percent',
+                          )
+                        }
+                        min={0}
+                        max={100}
+                        step={1}
+                      />
+                      <SliderInput
+                        label="T2V Text Encoder Offload %"
+                        value={Math.round(
+                          (jobConfig.config.process[0].dual_model?.t2v_model
+                            ?.layer_offloading_text_encoder_percent ?? 1) * 100,
+                        )}
+                        onChange={value =>
+                          setJobConfig(
+                            value * 0.01,
+                            'config.process[0].dual_model.t2v_model.layer_offloading_text_encoder_percent',
+                          )
+                        }
+                        min={0}
+                        max={100}
+                        step={1}
+                      />
+                    </div>
+                  )}
+                </>
+              )}
             </Card>
           )}
           <Card title="Target" className={secondaryTopCardClass}>

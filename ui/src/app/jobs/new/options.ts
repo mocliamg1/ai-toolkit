@@ -378,6 +378,7 @@ export const modelArchs: ModelArch[] = [
         {
           train_high_noise: true,
           train_low_noise: true,
+          load_trainable_stages_only: true,
           image_i2v_clip_training: false,
           image_i2v_clip_training_prob: 0.25,
           image_i2v_clip_num_frames: 5,
@@ -402,9 +403,13 @@ export const modelArchs: ModelArch[] = [
             lora_merge_strength: 1.0,
             high_noise_lora_merge_strength: 1.0,
             low_noise_lora_merge_strength: 1.0,
+            layer_offloading: false,
+            layer_offloading_transformer_percent: 1.0,
+            layer_offloading_text_encoder_percent: 1.0,
             model_kwargs: {
               train_high_noise: true,
               train_low_noise: true,
+              load_trainable_stages_only: true,
             },
           },
         },

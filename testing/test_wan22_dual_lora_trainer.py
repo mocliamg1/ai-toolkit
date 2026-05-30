@@ -105,6 +105,7 @@ def test_normalize_process_config_defaults_train_refiner_false():
     normalized = Wan22DualLoraTrainer.normalize_process_config(config)
 
     assert normalized["model"]["arch"] == "wan22_14b_i2v"
+    assert normalized["model"]["model_kwargs"]["load_trainable_stages_only"] is True
     assert normalized["train"]["train_refiner"] is False
     assert "train_refiner" not in config["train"]
 
@@ -125,6 +126,7 @@ def test_normalize_process_config_preserves_explicit_train_refiner_value():
     normalized = Wan22DualLoraTrainer.normalize_process_config(config)
 
     assert normalized["train"]["train_refiner"] is True
+    assert normalized["model"]["model_kwargs"]["load_trainable_stages_only"] is True
 
 
 def test_dual_t2v_model_config_preserves_base_lora_merge_fields(monkeypatch):
@@ -184,6 +186,8 @@ def test_dual_t2v_model_config_preserves_base_lora_merge_fields(monkeypatch):
     trainer = Wan22DualLoraTrainer(0, object(), config)
 
     assert trainer.model_config.arch == "wan22_14b_i2v"
+    assert trainer.model_config.model_kwargs["load_trainable_stages_only"] is True
+    assert trainer.dual_t2v_model_config.model_kwargs["load_trainable_stages_only"] is True
     assert trainer.dual_t2v_model_config.lora_path == [
         {"path": "t2v_base.safetensors", "strength": 0.75}
     ]

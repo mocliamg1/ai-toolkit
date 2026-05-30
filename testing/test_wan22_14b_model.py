@@ -11,6 +11,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import extensions_built_in.diffusion_models.wan22.wan22_14b_model as wan22_module
 
 from extensions_built_in.diffusion_models.wan22.wan22_14b_model import (
+    DualWanTransformer3DModel,
     Wan2214bModel,
     boundary_ratio_t2v,
 )
@@ -41,12 +42,54 @@ def _make_model(
         high_noise_lora_merge_strength=high_noise_lora_merge_strength,
         low_noise_lora_path=low_noise_lora_path,
         low_noise_lora_merge_strength=low_noise_lora_merge_strength,
+        model_kwargs={},
     )
     return model
 
 
 def _tensor_dict(key):
     return {key: torch.zeros(1)}
+
+
+class _FakeWanTransformer(torch.nn.Module):
+    def __init__(self, name):
+        super().__init__()
+        self.name = name
+        self.condition_embedder = SimpleNamespace(forward=lambda *args, **kwargs: None)
+        self.config = SimpleNamespace(in_channels=16)
+        self.scale_shift_table = torch.nn.Parameter(torch.zeros(1))
+        self.blocks = []
+        self._device = torch.device("cpu")
+
+    @property
+    def device(self):
+        return self._device
+
+    def to(self, device=None, *args, **kwargs):
+        if device is not None and not isinstance(device, torch.dtype):
+            self._device = torch.device(device)
+        return self
+
+    def enable_gradient_checkpointing(self):
+        self.gradient_checkpointing = True
+
+
+def _make_load_transformer_model(train_high_noise=True, train_low_noise=True):
+    model = _make_model(train_high_noise=train_high_noise, train_low_noise=train_low_noise)
+    model.model_config.model_kwargs["load_trainable_stages_only"] = True
+    model.model_config.split_model_over_gpus = False
+    model.model_config.assistant_lora_path = None
+    model.model_config.inference_lora_path = None
+    model.model_config.low_vram = True
+    model.model_config.layer_offloading = False
+    model.model_config.layer_offloading_transformer_percent = 0
+    model.model_config.quantize = False
+    model.model_config.accuracy_recovery_adapter = None
+    model.torch_dtype = torch.float32
+    model.device_torch = torch.device("cpu")
+    model.print_and_status_update = lambda *args, **kwargs: None
+    model._get_wan22_base_lora_merge_specs = lambda: []
+    return model
 
 
 def test_t2v_multistage_boundaries_use_t2v_boundary():
@@ -91,6 +134,84 @@ def test_single_stage_inference_falls_back_to_train_config():
         low_only._infer_single_stage_name_for_wan22_base_lora("/tmp/plain_model.safetensors")
         == "transformer_2"
     )
+
+
+def test_load_wan_transformer_low_only_skips_high_transformer(monkeypatch):
+    model = _make_load_transformer_model(train_high_noise=False, train_low_noise=True)
+    calls = []
+
+    def fake_from_pretrained(path, subfolder=None, torch_dtype=None):
+        calls.append((path, subfolder, torch_dtype))
+        return _FakeWanTransformer(subfolder or os.path.basename(path))
+
+    monkeypatch.setattr(wan22_module.WanTransformer3DModel, "from_pretrained", fake_from_pretrained)
+    monkeypatch.setattr(wan22_module, "flush", lambda: None)
+
+    transformer = model.load_wan_transformer("/models/wan/transformer")
+
+    assert calls == [("/models/wan/transformer_2", None, torch.float32)]
+    assert transformer.transformer_1 is None
+    assert transformer.transformer_2 is not None
+    assert transformer.transformer is transformer.transformer_2
+
+
+def test_load_wan_transformer_high_only_skips_low_transformer(monkeypatch):
+    model = _make_load_transformer_model(train_high_noise=True, train_low_noise=False)
+    calls = []
+
+    def fake_from_pretrained(path, subfolder=None, torch_dtype=None):
+        calls.append((path, subfolder, torch_dtype))
+        return _FakeWanTransformer(subfolder or os.path.basename(path))
+
+    monkeypatch.setattr(wan22_module.WanTransformer3DModel, "from_pretrained", fake_from_pretrained)
+    monkeypatch.setattr(wan22_module, "flush", lambda: None)
+
+    transformer = model.load_wan_transformer("/models/wan/transformer")
+
+    assert calls == [("/models/wan/transformer", None, torch.float32)]
+    assert transformer.transformer_1 is not None
+    assert transformer.transformer_2 is None
+    assert transformer.transformer is transformer.transformer_1
+
+
+def test_dual_transformer_raises_clear_error_for_unloaded_stage():
+    transformer = DualWanTransformer3DModel(
+        transformer_1=None,
+        transformer_2=_FakeWanTransformer("low"),
+        torch_dtype=torch.float32,
+        device=torch.device("cpu"),
+        boundary_ratio=boundary_ratio_t2v,
+        low_vram=True,
+    )
+
+    with pytest.raises(ValueError, match="transformer_1 is not loaded"):
+        transformer(
+            hidden_states=torch.zeros(1, 1, 1),
+            timestep=torch.tensor([1000]),
+            encoder_hidden_states=torch.zeros(1, 1, 1),
+        )
+
+
+def test_base_merge_filters_unloaded_stage_tensors():
+    model = _make_model(train_high_noise=False, train_low_noise=True)
+    transformer = DualWanTransformer3DModel(
+        transformer_1=None,
+        transformer_2=_FakeWanTransformer("low"),
+        torch_dtype=torch.float32,
+        device=torch.device("cpu"),
+        boundary_ratio=boundary_ratio_t2v,
+        low_vram=True,
+    )
+
+    filtered = model._filter_wan22_lora_state_dict_for_loaded_stages(
+        {
+            HIGH_STAGE_LORA_KEY: torch.zeros(1),
+            LOW_STAGE_LORA_KEY: torch.ones(1),
+        },
+        transformer,
+    )
+
+    assert list(filtered.keys()) == [LOW_STAGE_LORA_KEY]
 
 
 def test_explicit_base_merge_loads_both_stages(monkeypatch):

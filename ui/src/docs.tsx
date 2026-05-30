@@ -293,6 +293,15 @@ const docs: { [key: string]: ConfigDoc } = {
       </>
     ),
   },
+  'dual_model.t2v_model.layer_offloading': {
+    title: 'T2V Layer Offloading',
+    description: (
+      <>
+        Enables layer offloading for the secondary T2V model. This uses CPU RAM to reduce T2V GPU memory pressure during
+        dual-mode training.
+      </>
+    ),
+  },
   'datasets.control_path': {
     title: 'Control Dataset',
     description: (
