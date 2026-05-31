@@ -68,6 +68,9 @@ export interface NetworkConfig {
   conv_alpha: number;
   lokr_full_rank: boolean;
   lokr_factor: number;
+  pretrained_lora_path?: string;
+  high_noise_pretrained_lora_path?: string;
+  low_noise_pretrained_lora_path?: string;
   network_kwargs: {
     ignore_if_contains: string[];
   };

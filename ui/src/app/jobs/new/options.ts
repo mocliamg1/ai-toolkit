@@ -25,6 +25,8 @@ type AdditionalSections =
   | 'sample.ctrl_img'
   | 'sample.multi_ctrl_imgs'
   | 'train.audio_loss_multiplier'
+  | 'network.high_noise_pretrained_lora_path'
+  | 'network.low_noise_pretrained_lora_path'
   | 'datasets.num_frames'
   | 'model.multistage'
   | 'model.layer_offloading'
@@ -298,6 +300,8 @@ export const modelArchs: ModelArch[] = [
       'model.high_noise_lora_merge_strength',
       'model.low_noise_lora_path',
       'model.low_noise_lora_merge_strength',
+      'network.high_noise_pretrained_lora_path',
+      'network.low_noise_pretrained_lora_path',
     ],
     accuracyRecoveryAdapters: wan22T2VAccuracyRecoveryAdapters,
   },
@@ -346,6 +350,8 @@ export const modelArchs: ModelArch[] = [
       'model.high_noise_lora_merge_strength',
       'model.low_noise_lora_path',
       'model.low_noise_lora_merge_strength',
+      'network.high_noise_pretrained_lora_path',
+      'network.low_noise_pretrained_lora_path',
       'model.image_i2v_conditioning',
       'model.image_i2v_clip_training',
     ],
@@ -430,6 +436,8 @@ export const modelArchs: ModelArch[] = [
       'model.high_noise_lora_merge_strength',
       'model.low_noise_lora_path',
       'model.low_noise_lora_merge_strength',
+      'network.high_noise_pretrained_lora_path',
+      'network.low_noise_pretrained_lora_path',
       'model.image_i2v_conditioning',
       'model.image_i2v_clip_training',
       'model.dual_lora',

@@ -52,6 +52,32 @@ const docs: { [key: string]: ConfigDoc } = {
       </>
     ),
   },
+  'config.process[0].network.high_noise_pretrained_lora_path': {
+    title: 'Initial High-Noise LoRA',
+    description: (
+      <>
+        Optional Wan 2.2 LoRA file used to initialize the trainable high-noise LoRA weights before training starts.
+        <br />
+        <br />
+        This does not merge into the base model. Use it to continue from a high-noise split LoRA while keeping optimizer
+        state and training step metadata reset for a new run. It cannot be used together with
+        <code>config.process[0].network.pretrained_lora_path</code>.
+      </>
+    ),
+  },
+  'config.process[0].network.low_noise_pretrained_lora_path': {
+    title: 'Initial Low-Noise LoRA',
+    description: (
+      <>
+        Optional Wan 2.2 LoRA file used to initialize the trainable low-noise LoRA weights before training starts.
+        <br />
+        <br />
+        This does not merge into the base model. Use it to continue from a low-noise split LoRA while keeping optimizer
+        state and training step metadata reset for a new run. It cannot be used together with
+        <code>config.process[0].network.pretrained_lora_path</code>.
+      </>
+    ),
+  },
   'config.process[0].model.lora_path': {
     title: 'Base Merge LoRA Path',
     description: (

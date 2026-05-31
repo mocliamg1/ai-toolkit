@@ -18,6 +18,10 @@ config:
         type: "lora"
         linear: 32
         linear_alpha: 32
+        # Optional: initialize trainable split LoRA weights without merging into the base model.
+        # Cannot be used together with network.pretrained_lora_path.
+        # high_noise_pretrained_lora_path: "user/repo/my_wan_lora_high_noise.safetensors"
+        # low_noise_pretrained_lora_path: "user/repo/my_wan_lora_low_noise.safetensors"
       save:
         dtype: float16 # precision to save
         save_every: 250 # save every this many steps

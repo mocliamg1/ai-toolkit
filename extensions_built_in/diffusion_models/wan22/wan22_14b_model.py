@@ -1170,6 +1170,82 @@ class Wan2214bModel(Wan21):
             )
             save_file(low_noise_lora, low_noise_lora_path, metadata=metadata)
 
+    def _normalize_wan22_pretrained_lora_path(
+        self, lora_path: Any, field_name: str
+    ) -> Optional[str]:
+        if not self._is_wan22_base_lora_value_set(lora_path):
+            return None
+        if not isinstance(lora_path, str):
+            raise ValueError(f"Wan2.2 `{field_name}` must be a path string")
+        lora_path = lora_path.strip()
+        if lora_path == "":
+            return None
+        return lora_path
+
+    @staticmethod
+    def _strip_wan22_stage_prefix_from_lora_key(key: str) -> str:
+        for stage_prefix in (".transformer_1.", ".transformer_2."):
+            if stage_prefix in key:
+                return key.replace(stage_prefix, ".", 1)
+        for stage_prefix in ("_transformer_1_", "_transformer_2_"):
+            if stage_prefix in key:
+                return key.replace(stage_prefix, "_", 1)
+        return key
+
+    def _strip_wan22_stage_prefixes_for_single_stage(
+        self, state_dict: Dict[str, torch.Tensor]
+    ) -> OrderedDict:
+        stripped_state_dict = OrderedDict()
+        for key, value in state_dict.items():
+            stripped_state_dict[self._strip_wan22_stage_prefix_from_lora_key(key)] = value
+        return stripped_state_dict
+
+    def load_stage_pretrained_lora(
+        self,
+        high_noise_path: Optional[str] = None,
+        low_noise_path: Optional[str] = None,
+    ) -> OrderedDict:
+        high_noise_path = self._normalize_wan22_pretrained_lora_path(
+            high_noise_path, "network.high_noise_pretrained_lora_path"
+        )
+        low_noise_path = self._normalize_wan22_pretrained_lora_path(
+            low_noise_path, "network.low_noise_pretrained_lora_path"
+        )
+
+        if high_noise_path is not None and not self.train_high_noise:
+            raise ValueError(
+                "Wan2.2 `network.high_noise_pretrained_lora_path` requires "
+                "`model.model_kwargs.train_high_noise: true`."
+            )
+        if low_noise_path is not None and not self.train_low_noise:
+            raise ValueError(
+                "Wan2.2 `network.low_noise_pretrained_lora_path` requires "
+                "`model.model_kwargs.train_low_noise: true`."
+            )
+
+        combined_dict = OrderedDict()
+        if high_noise_path is not None:
+            resolved_path = self._resolve_wan22_base_lora_path(high_noise_path)
+            combined_dict.update(
+                self._load_explicit_wan22_stage_lora_state_dict_from_resolved_path(
+                    resolved_path, "transformer_1"
+                )
+            )
+        if low_noise_path is not None:
+            resolved_path = self._resolve_wan22_base_lora_path(low_noise_path)
+            combined_dict.update(
+                self._load_explicit_wan22_stage_lora_state_dict_from_resolved_path(
+                    resolved_path, "transformer_2"
+                )
+            )
+
+        if not (self.train_high_noise and self.train_low_noise):
+            combined_dict = self._strip_wan22_stage_prefixes_for_single_stage(
+                combined_dict
+            )
+
+        return combined_dict
+
     def load_lora(self, file: str):
         # if it doesnt have high_noise or low_noise, it is a combo LoRA
         is_split_lora, high_noise_lora_path, low_noise_lora_path = self._get_wan22_split_lora_specs(file)

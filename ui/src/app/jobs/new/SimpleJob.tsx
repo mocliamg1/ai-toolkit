@@ -995,6 +995,34 @@ export default function SimpleJob({
                     max={1024}
                   />
                 )}
+                {modelArch?.additionalSections?.includes('network.high_noise_pretrained_lora_path') && (
+                  <TextInput
+                    label="Initial High-Noise LoRA"
+                    value={jobConfig.config.process[0].network.high_noise_pretrained_lora_path ?? ''}
+                    docKey="config.process[0].network.high_noise_pretrained_lora_path"
+                    onChange={(value: string | null) => {
+                      setJobConfig(
+                        value?.trim() ? value : undefined,
+                        'config.process[0].network.high_noise_pretrained_lora_path',
+                      );
+                    }}
+                    placeholder=""
+                  />
+                )}
+                {modelArch?.additionalSections?.includes('network.low_noise_pretrained_lora_path') && (
+                  <TextInput
+                    label="Initial Low-Noise LoRA"
+                    value={jobConfig.config.process[0].network.low_noise_pretrained_lora_path ?? ''}
+                    docKey="config.process[0].network.low_noise_pretrained_lora_path"
+                    onChange={(value: string | null) => {
+                      setJobConfig(
+                        value?.trim() ? value : undefined,
+                        'config.process[0].network.low_noise_pretrained_lora_path',
+                      );
+                    }}
+                    placeholder=""
+                  />
+                )}
               </>
             )}
           </Card>

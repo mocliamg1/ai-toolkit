@@ -220,6 +220,8 @@ class NetworkConfig:
         
         # start from a pretrained lora
         self.pretrained_lora_path = kwargs.get('pretrained_lora_path', None)
+        self.high_noise_pretrained_lora_path = kwargs.get('high_noise_pretrained_lora_path', None)
+        self.low_noise_pretrained_lora_path = kwargs.get('low_noise_pretrained_lora_path', None)
 
 
 AdapterTypes = Literal['t2i', 'ip', 'ip+', 'clip', 'ilora', 'photo_maker', 'control_net', 'control_lora', 'i2v']

@@ -105,6 +105,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
             self.network_config = NetworkConfig(**network_config)
         else:
             self.network_config = None
+        self.validate_pretrained_lora_config()
         self.train_config = TrainConfig(**self.get_conf('train', {}))
         model_config = self.get_conf('model', {})
         self.modules_being_trained: List[torch.nn.Module] = []
@@ -790,6 +791,62 @@ class BaseSDTrainProcess(BaseTrainProcess):
     def hook_train_loop(self, batch):
         # return loss
         return 0.0
+
+    @staticmethod
+    def _is_config_value_set(value):
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return value.strip() != ""
+        return True
+
+    def has_stage_pretrained_lora_paths(self):
+        if self.network_config is None:
+            return False
+        return (
+            self._is_config_value_set(getattr(self.network_config, 'high_noise_pretrained_lora_path', None))
+            or self._is_config_value_set(getattr(self.network_config, 'low_noise_pretrained_lora_path', None))
+        )
+
+    def validate_pretrained_lora_config(self):
+        if self.network_config is None:
+            return
+        if (
+            self._is_config_value_set(getattr(self.network_config, 'pretrained_lora_path', None))
+            and self.has_stage_pretrained_lora_paths()
+        ):
+            raise ValueError(
+                "Cannot set `network.pretrained_lora_path` together with "
+                "`network.high_noise_pretrained_lora_path` or "
+                "`network.low_noise_pretrained_lora_path`. Use either the legacy "
+                "single-path initializer or the Wan2.2 stage-specific initializers."
+            )
+
+    def load_stage_pretrained_lora_weights(self):
+        if self.network is None:
+            raise ValueError("Stage-specific pretrained LoRA weights require a network")
+        if not hasattr(self.sd, "load_stage_pretrained_lora"):
+            raise ValueError(
+                "`network.high_noise_pretrained_lora_path` and "
+                "`network.low_noise_pretrained_lora_path` are only supported for "
+                "Wan2.2 14B staged LoRA training."
+            )
+
+        high_noise_path = getattr(self.network_config, 'high_noise_pretrained_lora_path', None)
+        low_noise_path = getattr(self.network_config, 'low_noise_pretrained_lora_path', None)
+        print_acc("Loading Wan2.2 stage-specific initial LoRA weights")
+        weights_sd = self.sd.load_stage_pretrained_lora(
+            high_noise_path=high_noise_path,
+            low_noise_path=low_noise_path,
+        )
+        return self.network.load_weights(weights_sd)
+
+    def load_initial_network_weights_if_needed(self, latest_save_path):
+        if latest_save_path is not None:
+            return None
+        if not self.has_stage_pretrained_lora_paths():
+            return None
+        return self.load_stage_pretrained_lora_weights()
     
     def hook_after_sd_init_before_load(self):
         pass
@@ -1862,6 +1919,10 @@ class BaseSDTrainProcess(BaseTrainProcess):
                     print_acc(f"Loading from {latest_save_path}")
                     extra_weights = self.load_weights(latest_save_path)
                     self.network.multiplier = 1.0
+                elif not self.train_config.merge_network_on_save:
+                    extra_weights = self.load_initial_network_weights_if_needed(latest_save_path)
+                    if extra_weights is not None:
+                        self.network.multiplier = 1.0
                 
                 if self.network_config.layer_offloading:
                     MemoryManager.attach(

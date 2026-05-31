@@ -407,6 +407,26 @@ def test_tie_secondary_lora_parameters_shares_matching_parameter_objects():
     assert all(not param.requires_grad for param in secondary_extra.parameters())
 
 
+def test_tie_secondary_lora_parameters_shares_initialized_primary_weights():
+    primary_shared = _FakeLoraModule("shared")
+    with torch.no_grad():
+        primary_shared.lora_down.weight.fill_(3.0)
+        primary_shared.lora_up.weight.fill_(4.0)
+    primary_network = _FakeNetwork([primary_shared])
+    secondary_shared = _FakeLoraModule("shared")
+    secondary_network = _FakeNetwork([secondary_shared])
+
+    Wan22DualLoraTrainer._tie_secondary_lora_parameters(
+        primary_network,
+        secondary_network,
+    )
+
+    assert secondary_shared.lora_down.weight is primary_shared.lora_down.weight
+    assert secondary_shared.lora_up.weight is primary_shared.lora_up.weight
+    assert torch.all(secondary_shared.lora_down.weight == 3.0)
+    assert torch.all(secondary_shared.lora_up.weight == 4.0)
+
+
 def test_tie_secondary_lora_parameters_skips_shape_mismatches():
     primary_network = _FakeNetwork([_FakeLoraModule("mismatch", out_dim=4)])
     secondary_mismatch = _FakeLoraModule("mismatch", out_dim=8)
@@ -652,3 +672,57 @@ def test_dual_config_validation_rejects_text_encoder_training():
 
     with pytest.raises(ValueError, match="train_text_encoder"):
         trainer._validate_dual_training_config()
+
+
+def test_stage_pretrained_config_rejects_legacy_pretrained_path():
+    trainer = object.__new__(SDTrainer)
+    trainer.network_config = SimpleNamespace(
+        pretrained_lora_path="legacy.safetensors",
+        high_noise_pretrained_lora_path="high.safetensors",
+        low_noise_pretrained_lora_path=None,
+    )
+
+    with pytest.raises(ValueError, match="Cannot set `network.pretrained_lora_path`"):
+        trainer.validate_pretrained_lora_config()
+
+
+def test_stage_pretrained_initial_weights_are_skipped_when_resuming():
+    trainer = object.__new__(SDTrainer)
+    trainer.network_config = SimpleNamespace(
+        pretrained_lora_path=None,
+        high_noise_pretrained_lora_path="high.safetensors",
+        low_noise_pretrained_lora_path=None,
+    )
+    calls = []
+    trainer.load_stage_pretrained_lora_weights = lambda: calls.append("loaded")
+
+    assert trainer.load_initial_network_weights_if_needed("/tmp/checkpoint.safetensors") is None
+    assert calls == []
+
+
+def test_stage_pretrained_initial_weights_do_not_load_metadata():
+    trainer = object.__new__(SDTrainer)
+    trainer.network_config = SimpleNamespace(
+        pretrained_lora_path=None,
+        high_noise_pretrained_lora_path="high.safetensors",
+        low_noise_pretrained_lora_path="low.safetensors",
+    )
+    trainer.sd = SimpleNamespace(
+        load_stage_pretrained_lora=lambda high_noise_path, low_noise_path: {
+            "weight": torch.ones(1)
+        }
+    )
+    calls = {}
+
+    class FakeNetwork:
+        def load_weights(self, state_dict):
+            calls["state_dict"] = state_dict
+            return "extra"
+
+    trainer.network = FakeNetwork()
+    trainer.load_training_state_from_metadata = lambda path: (_ for _ in ()).throw(
+        AssertionError("metadata should not load for initial weights")
+    )
+
+    assert trainer.load_stage_pretrained_lora_weights() == "extra"
+    assert list(calls["state_dict"].keys()) == ["weight"]

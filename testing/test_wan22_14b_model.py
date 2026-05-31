@@ -829,6 +829,107 @@ def test_legacy_split_merge_entrypoint_uses_legacy_strength_for_each_spec(monkey
     assert calls["merge_in"] == [0.9, 0.9]
 
 
+def test_stage_pretrained_lora_loads_both_stages(monkeypatch):
+    model = _make_model()
+
+    monkeypatch.setattr(model, "_resolve_wan22_base_lora_path", lambda path: f"/resolved/{path}")
+    monkeypatch.setattr(
+        wan22_module,
+        "load_file",
+        lambda path: _tensor_dict(PLAIN_LORA_KEY),
+    )
+
+    state_dict = model.load_stage_pretrained_lora(
+        high_noise_path="high.safetensors",
+        low_noise_path="low.safetensors",
+    )
+
+    assert list(state_dict.keys()) == [HIGH_STAGE_LORA_KEY, LOW_STAGE_LORA_KEY]
+
+
+def test_stage_pretrained_lora_high_only_strips_stage_prefix(monkeypatch):
+    model = _make_model(train_high_noise=True, train_low_noise=False)
+
+    monkeypatch.setattr(model, "_resolve_wan22_base_lora_path", lambda path: path)
+    monkeypatch.setattr(
+        wan22_module,
+        "load_file",
+        lambda path: _tensor_dict(PLAIN_LORA_KEY),
+    )
+
+    state_dict = model.load_stage_pretrained_lora(
+        high_noise_path="high.safetensors"
+    )
+
+    assert list(state_dict.keys()) == [PLAIN_LORA_KEY]
+
+
+def test_stage_pretrained_lora_low_only_strips_stage_prefix(monkeypatch):
+    model = _make_model(train_high_noise=False, train_low_noise=True)
+
+    monkeypatch.setattr(model, "_resolve_wan22_base_lora_path", lambda path: path)
+    monkeypatch.setattr(
+        wan22_module,
+        "load_file",
+        lambda path: _tensor_dict(PLAIN_LORA_KEY),
+    )
+
+    state_dict = model.load_stage_pretrained_lora(
+        low_noise_path="low.safetensors"
+    )
+
+    assert list(state_dict.keys()) == [PLAIN_LORA_KEY]
+
+
+def test_stage_pretrained_lora_rejects_disabled_high_stage():
+    model = _make_model(train_high_noise=False, train_low_noise=True)
+
+    with pytest.raises(ValueError, match="high_noise_pretrained_lora_path"):
+        model.load_stage_pretrained_lora(high_noise_path="high.safetensors")
+
+
+def test_stage_pretrained_lora_rejects_disabled_low_stage():
+    model = _make_model(train_high_noise=True, train_low_noise=False)
+
+    with pytest.raises(ValueError, match="low_noise_pretrained_lora_path"):
+        model.load_stage_pretrained_lora(low_noise_path="low.safetensors")
+
+
+def test_stage_pretrained_high_rejects_low_stage_weights(monkeypatch):
+    model = _make_model()
+
+    monkeypatch.setattr(model, "_resolve_wan22_base_lora_path", lambda path: path)
+    monkeypatch.setattr(
+        wan22_module,
+        "load_file",
+        lambda path: _tensor_dict(LOW_STAGE_LORA_KEY),
+    )
+
+    with pytest.raises(ValueError, match="contains keys for transformer_2"):
+        model.load_stage_pretrained_lora(high_noise_path="high.safetensors")
+
+
+def test_stage_pretrained_low_rejects_high_stage_weights(monkeypatch):
+    model = _make_model()
+
+    monkeypatch.setattr(model, "_resolve_wan22_base_lora_path", lambda path: path)
+    monkeypatch.setattr(
+        wan22_module,
+        "load_file",
+        lambda path: _tensor_dict(HIGH_STAGE_LORA_KEY),
+    )
+
+    with pytest.raises(ValueError, match="contains keys for transformer_1"):
+        model.load_stage_pretrained_lora(low_noise_path="low.safetensors")
+
+
+def test_stage_pretrained_lora_rejects_non_string_path():
+    model = _make_model()
+
+    with pytest.raises(ValueError, match="must be a path string"):
+        model.load_stage_pretrained_lora(high_noise_path=["high.safetensors"])
+
+
 def test_save_lora_high_only_writes_high_noise_file(monkeypatch):
     model = _make_model(train_high_noise=True, train_low_noise=False)
     model.network = SimpleNamespace(

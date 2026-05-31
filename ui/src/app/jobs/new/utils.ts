@@ -68,6 +68,12 @@ export const handleModelArchChange = (
   if (!newArch?.additionalSections?.includes('model.low_noise_lora_merge_strength')) {
     setJobConfig(undefined, 'config.process[0].model.low_noise_lora_merge_strength');
   }
+  if (!newArch?.additionalSections?.includes('network.high_noise_pretrained_lora_path')) {
+    setJobConfig(undefined, 'config.process[0].network.high_noise_pretrained_lora_path');
+  }
+  if (!newArch?.additionalSections?.includes('network.low_noise_pretrained_lora_path')) {
+    setJobConfig(undefined, 'config.process[0].network.low_noise_pretrained_lora_path');
+  }
 
   // handle layer offloading setting
   if (!newArch?.additionalSections?.includes('model.layer_offloading')) {
