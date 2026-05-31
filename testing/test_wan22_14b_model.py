@@ -60,6 +60,7 @@ class _FakeWanTransformer(torch.nn.Module):
         self.scale_shift_table = torch.nn.Parameter(torch.zeros(1))
         self.blocks = []
         self._device = torch.device("cpu")
+        self.forward_calls = []
 
     @property
     def device(self):
@@ -72,6 +73,14 @@ class _FakeWanTransformer(torch.nn.Module):
 
     def enable_gradient_checkpointing(self):
         self.gradient_checkpointing = True
+
+    def forward(self, **kwargs):
+        self.forward_calls.append(kwargs)
+        return {
+            "sample": torch.full_like(
+                kwargs["hidden_states"], len(self.forward_calls)
+            )
+        }
 
 
 def _make_load_transformer_model(train_high_noise=True, train_low_noise=True):
@@ -89,6 +98,19 @@ def _make_load_transformer_model(train_high_noise=True, train_low_noise=True):
     model.device_torch = torch.device("cpu")
     model.print_and_status_update = lambda *args, **kwargs: None
     model._get_wan22_base_lora_merge_specs = lambda: []
+    return model
+
+
+def _make_single_stage_loaded_model():
+    model = object.__new__(Wan2214bModel)
+    model.model = DualWanTransformer3DModel(
+        transformer_1=None,
+        transformer_2=_FakeWanTransformer("low"),
+        torch_dtype=torch.float32,
+        device=torch.device("cpu"),
+        boundary_ratio=boundary_ratio_t2v,
+        low_vram=True,
+    )
     return model
 
 
@@ -190,6 +212,53 @@ def test_dual_transformer_raises_clear_error_for_unloaded_stage():
             timestep=torch.tensor([1000]),
             encoder_hidden_states=torch.zeros(1, 1, 1),
         )
+
+
+def test_generation_pipeline_rejects_single_stage_loaded_transformer():
+    model = _make_single_stage_loaded_model()
+
+    with pytest.raises(ValueError, match="sampling requires both transformer stages"):
+        model.get_generation_pipeline()
+
+
+def test_save_model_rejects_single_stage_loaded_transformer(tmp_path):
+    model = _make_single_stage_loaded_model()
+
+    with pytest.raises(ValueError, match="full-model saving requires both transformer stages"):
+        model.save_model(str(tmp_path), meta={}, save_dtype=torch.float32)
+
+
+def test_dual_transformer_routes_high_and_low_timesteps_to_different_models():
+    high_transformer = _FakeWanTransformer("high")
+    low_transformer = _FakeWanTransformer("low")
+    transformer = DualWanTransformer3DModel(
+        transformer_1=high_transformer,
+        transformer_2=low_transformer,
+        torch_dtype=torch.float32,
+        device=torch.device("cpu"),
+        boundary_ratio=boundary_ratio_t2v,
+        low_vram=False,
+    )
+
+    hidden_states = torch.zeros(1, 1, 1)
+    encoder_hidden_states = torch.zeros(1, 1, 1)
+
+    transformer(
+        hidden_states=hidden_states,
+        timestep=torch.tensor([900]),
+        encoder_hidden_states=encoder_hidden_states,
+    )
+    transformer(
+        hidden_states=hidden_states,
+        timestep=torch.tensor([800]),
+        encoder_hidden_states=encoder_hidden_states,
+    )
+
+    assert len(high_transformer.forward_calls) == 1
+    assert len(low_transformer.forward_calls) == 1
+    assert high_transformer.forward_calls[0]["timestep"].item() == 900
+    assert low_transformer.forward_calls[0]["timestep"].item() == 800
+    assert transformer._active_transformer_name == "transformer_2"
 
 
 def test_base_merge_filters_unloaded_stage_tensors():

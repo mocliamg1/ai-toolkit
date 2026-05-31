@@ -783,6 +783,16 @@ export default function SimpleJob({
           )}
           {modelArch?.additionalSections?.includes('model.dual_lora') && (
             <Card title="Dual Mode" className={secondaryTopCardClass}>
+              <SelectInput
+                label="Training Mode"
+                value={jobConfig.config.process[0].dual_model?.training_mode ?? 'alternating'}
+                onChange={value => setJobConfig(value, 'config.process[0].dual_model.training_mode')}
+                options={[
+                  { value: 'alternating', label: 'Alternating' },
+                  { value: 'paired', label: 'Paired' },
+                ]}
+                docKey="dual_model.training_mode"
+              />
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <NumberInput
                   label="I2V Steps"

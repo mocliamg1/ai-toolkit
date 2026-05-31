@@ -31,13 +31,15 @@ config:
         # images will automatically be resized and bucketed into the resolution specified
         # on windows, escape back slashes with another backslash so
         # "C:\\path\\to\\images\\folder"
-        # AI-Toolkit does not currently support video datasets, we will train on 1 frame at a time
-        # it works well for characters, but not as well for "actions"
+        # For video folders, set max_frames and fps. Videos are resampled to fps,
+        # cached as full-video latents, then randomly windowed to max_frames.
         - folder_path: "/path/to/images/folder"
           caption_ext: "txt"
           caption_dropout_rate: 0.05  # will drop out the caption 5% of time
           shuffle_tokens: false  # shuffle caption order, split by commas
           cache_latents_to_disk: true  # leave this true unless you know what you're doing
+          # max_frames: 81
+          # fps: 16
           resolution: [ 632 ]  # will be around 480p
       train:
         batch_size: 1

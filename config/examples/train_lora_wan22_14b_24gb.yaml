@@ -29,9 +29,9 @@ config:
         - folder_path: "/path/to/images/or/video/folder"
           caption_ext: "txt"
           caption_dropout_rate: 0.05  # will drop out the caption 5% of time
-          # number of frames to extract from your video. It will automatically extract them evenly spaced
-          # set to 1 frame for images
-          num_frames: 1
+          # For images, keep max_frames at 1. For video folders, set max_frames and fps;
+          # videos are resampled to fps, cached as full-video latents, then randomly windowed to max_frames.
+          max_frames: 1
           resolution: [ 512, 768, 1024]
       train:
         batch_size: 1

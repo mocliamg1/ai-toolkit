@@ -6,7 +6,9 @@ import torch
 
 from extensions_built_in.sd_trainer.SDTrainer import SDTrainer
 from toolkit.basic import flush
+from toolkit.clip_vision_adapter import ClipVisionAdapter
 from toolkit.config_modules import ModelConfig
+from toolkit.custom_adapter import CustomAdapter
 from toolkit.lora_special import LoRASpecialNetwork
 from toolkit.print import print_acc
 from toolkit.train_tools import get_torch_dtype
@@ -14,6 +16,7 @@ from toolkit.util.get_model import get_model_class
 
 
 DualMode = Literal["i2v", "t2v"]
+DualTrainingMode = Literal["alternating", "paired"]
 
 
 class Wan22DualLoraTrainer(SDTrainer):
@@ -54,6 +57,15 @@ class Wan22DualLoraTrainer(SDTrainer):
         self.dual_t2v_model_config = ModelConfig(**t2v_model_config)
         self.dual_i2v_steps = max(1, int(dual_config.get("i2v_steps", 8)))
         self.dual_t2v_steps = max(1, int(dual_config.get("t2v_steps", 2)))
+        self.dual_training_mode: DualTrainingMode = dual_config.get(
+            "training_mode",
+            "alternating",
+        )
+        if self.dual_training_mode not in ("alternating", "paired"):
+            raise ValueError(
+                "Wan2.2 dual LoRA training dual_model.training_mode must be "
+                "'alternating' or 'paired'"
+            )
         self.dual_offload_inactive_to_cpu = bool(
             dual_config.get("offload_inactive_to_cpu", True)
         )
@@ -64,6 +76,7 @@ class Wan22DualLoraTrainer(SDTrainer):
         self._shared_lora_module_count = 0
         self._shared_lora_tensor_count = 0
         self._shared_primary_parameter_ids = set()
+        self._active_paired_loss_weight = 1.0
 
         self._validate_dual_training_config()
 
@@ -387,6 +400,10 @@ class Wan22DualLoraTrainer(SDTrainer):
         cycle_index = step % cycle
         return "i2v" if cycle_index < self.dual_i2v_steps else "t2v"
 
+    def _get_paired_loss_weights(self) -> Tuple[float, float]:
+        total_steps = self.dual_i2v_steps + self.dual_t2v_steps
+        return self.dual_i2v_steps / total_steps, self.dual_t2v_steps / total_steps
+
     def _activate_dual_mode(self, mode: DualMode):
         if mode == self.active_dual_mode:
             return
@@ -433,8 +450,138 @@ class Wan22DualLoraTrainer(SDTrainer):
             torch.cuda.empty_cache()
 
     def hook_train_loop(self, batch):
+        if getattr(self, "dual_training_mode", "alternating") == "paired":
+            return self._hook_paired_train_loop(batch)
+
         self._activate_dual_mode(self._get_dual_mode_for_step())
         return super().hook_train_loop(batch)
+
+    def _hook_paired_train_loop(self, batch):
+        if isinstance(batch, list):
+            batch_list = batch
+        else:
+            batch_list = [batch]
+
+        i2v_weight, t2v_weight = self._get_paired_loss_weights()
+        total_loss = None
+
+        self.optimizer.zero_grad()
+        for batch_item in batch_list:
+            self._advance_multistage_boundary_once()
+            original_batch_state = self._snapshot_batch_state(batch_item)
+
+            try:
+                i2v_loss = self._train_paired_dual_mode_batch("i2v", batch_item, i2v_weight)
+            finally:
+                self._restore_batch_state(batch_item, original_batch_state)
+
+            try:
+                t2v_loss = self._train_paired_dual_mode_batch("t2v", batch_item, t2v_weight)
+            finally:
+                self._restore_batch_state(batch_item, original_batch_state)
+
+            self.steps_this_boundary += 1
+            loss = i2v_loss + t2v_loss
+            total_loss = loss if total_loss is None else total_loss + loss
+
+            if len(batch_list) > 1 and self._paired_models_are_low_vram():
+                torch.cuda.empty_cache()
+
+        if not self.is_grad_accumulation_step:
+            if self.train_config.optimizer != "adafactor":
+                if isinstance(self.params[0], dict):
+                    for i in range(len(self.params)):
+                        self.accelerator.clip_grad_norm_(
+                            self.params[i]["params"],
+                            self.train_config.max_grad_norm,
+                        )
+                else:
+                    self.accelerator.clip_grad_norm_(
+                        self.params,
+                        self.train_config.max_grad_norm,
+                    )
+            with self.timer("optimizer_step"):
+                self.optimizer.step()
+                self.optimizer.zero_grad(set_to_none=True)
+
+                adapter = getattr(self, "adapter", None)
+                if adapter and isinstance(adapter, CustomAdapter):
+                    adapter.post_weight_update()
+
+            ema = getattr(self, "ema", None)
+            if ema is not None:
+                with self.timer("ema_update"):
+                    ema.update()
+
+        with self.timer("scheduler_step"):
+            self.lr_scheduler.step()
+
+        embedding = getattr(self, "embedding", None)
+        if embedding is not None:
+            with self.timer("restore_embeddings"):
+                embedding.restore_embeddings()
+
+        adapter = getattr(self, "adapter", None)
+        if adapter is not None and isinstance(adapter, ClipVisionAdapter):
+            with self.timer("restore_adapter"):
+                adapter.restore_embeddings()
+
+        loss_dict = OrderedDict({"loss": (total_loss / len(batch_list)).item()})
+        self.end_of_training_loop()
+        return loss_dict
+
+    def _train_paired_dual_mode_batch(
+        self,
+        mode: DualMode,
+        batch,
+        loss_weight: float,
+    ) -> torch.Tensor:
+        previous_loss_weight = self._active_paired_loss_weight
+        self._active_paired_loss_weight = loss_weight
+        try:
+            self._activate_dual_mode(mode)
+            return self.train_single_accumulation(batch)
+        finally:
+            self._active_paired_loss_weight = previous_loss_weight
+
+    def calculate_loss(self, *args, **kwargs):
+        loss = super().calculate_loss(*args, **kwargs)
+        return loss * getattr(self, "_active_paired_loss_weight", 1.0)
+
+    def _advance_multistage_boundary_once(self):
+        sd = self.primary_sd if self.primary_sd is not None else self.sd
+        if not getattr(sd, "is_multistage", False):
+            return
+        if (
+            self.steps_this_boundary >= self.train_config.switch_boundary_every
+            or self.current_boundary_index not in sd.trainable_multistage_boundaries
+        ):
+            while True:
+                self.steps_this_boundary = 0
+                self.current_boundary_index += 1
+                if self.current_boundary_index >= len(sd.multistage_boundaries):
+                    self.current_boundary_index = 0
+                if self.current_boundary_index in sd.trainable_multistage_boundaries:
+                    break
+
+    @staticmethod
+    def _snapshot_batch_state(batch) -> Optional[dict]:
+        if batch is None:
+            return None
+        return dict(batch.__dict__)
+
+    @staticmethod
+    def _restore_batch_state(batch, state: Optional[dict]):
+        if batch is None or state is None:
+            return
+        batch.__dict__.clear()
+        batch.__dict__.update(state)
+
+    def _paired_models_are_low_vram(self) -> bool:
+        return bool(
+            getattr(self.primary_model_config, "low_vram", False)
+            or getattr(self.dual_t2v_model_config, "low_vram", False)
+        )
 
     def sample(self, *args, **kwargs):
         if self.primary_sd is not None and self.primary_network is not None:

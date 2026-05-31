@@ -17,7 +17,7 @@ from tqdm import tqdm
 from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection, SiglipImageProcessor
 
 from toolkit.audio.preserve_pitch import time_stretch_preserve_pitch
-from toolkit.basic import flush, value_map
+from toolkit.basic import flush, get_quick_signature_string, value_map
 from toolkit.buckets import get_bucket_for_image_size, get_resolution
 from toolkit.config_modules import ControlTypes
 from toolkit.control_generator import ControlGenerator
@@ -121,6 +121,51 @@ def waveform_to_stereo(waveform):
         k = 0.7071
         return torch.stack([fl + k * fc + k * (bl + sl), fr + k * fc + k * (br + sr)])
     return waveform.mean(0, keepdim=True).expand(2, -1)
+
+
+def normalize_video_frame_count(frame_count: int, temporal_compression: int) -> int:
+    frame_count = max(1, int(frame_count))
+    temporal_compression = max(1, int(temporal_compression))
+    if frame_count == 1:
+        return 1
+    return ((frame_count - 1) // temporal_compression) * temporal_compression + 1
+
+
+def source_frame_count_to_latent_count(frame_count: int, temporal_compression: int) -> int:
+    frame_count = normalize_video_frame_count(frame_count, temporal_compression)
+    temporal_compression = max(1, int(temporal_compression))
+    return ((frame_count - 1) // temporal_compression) + 1
+
+
+def latent_frame_count_to_source_count(latent_count: int, temporal_compression: int) -> int:
+    latent_count = max(1, int(latent_count))
+    temporal_compression = max(1, int(temporal_compression))
+    return ((latent_count - 1) * temporal_compression) + 1
+
+
+def build_time_resampled_frame_indices(
+    total_frames: int,
+    source_fps: float,
+    target_fps: int,
+    temporal_compression: int = 1,
+) -> List[int]:
+    total_frames = max(1, int(total_frames))
+    target_fps = max(1, int(target_fps))
+    max_frame_index = total_frames - 1
+
+    if source_fps is None or source_fps <= 0:
+        source_fps = float(target_fps)
+
+    duration_seconds = float(total_frames) / float(source_fps)
+    target_frame_count = max(1, int(round(duration_seconds * float(target_fps))))
+    target_frame_count = normalize_video_frame_count(target_frame_count, temporal_compression)
+
+    frames_to_extract = []
+    for target_frame_idx in range(target_frame_count):
+        target_time = float(target_frame_idx) / float(target_fps)
+        source_frame_idx = int(round(target_time * float(source_fps)))
+        frames_to_extract.append(min(max(source_frame_idx, 0), max_frame_index))
+    return frames_to_extract
 
 
 class CaptionMixin:
@@ -521,7 +566,11 @@ class ImageProcessingDTOMixin:
             # Get video properties
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             video_fps = cap.get(cv2.CAP_PROP_FPS)
-            
+            if total_frames <= 0:
+                raise Exception(f"Video has no readable frames: {self.path}")
+            if video_fps is None or video_fps <= 0:
+                video_fps = float(self.dataset_config.fps)
+
             # Calculate the max valid frame index (accounting for zero-indexing)
             max_frame_index = total_frames - 1
             
@@ -532,47 +581,28 @@ class ImageProcessingDTOMixin:
                 print_acc(f"  Max valid frame index: {max_frame_index}")
                 print_acc(f"  FPS: {video_fps}")
             
-            frames_to_extract = []
-            
-            if self.dataset_config.auto_frame_count:
-                # allow for any length video here but make sure it is temporally compressable.
-                vid_length_seconds = total_frames / video_fps
-                
-                desired_num_frames = int(vid_length_seconds * self.dataset_config.fps)
-                
-                # make sure it is divisible by temporal_compression
-                desired_num_frames = desired_num_frames // self.temporal_compression * self.temporal_compression
-                
-                # TODO, all models currently add a key frame, but future models may not, update here if this changes.
-                desired_num_frames += 1  # add one for the key frame that is always added
-                
-                self.num_frames = desired_num_frames
-                
-            
-            # Always stretch/shrink to the requested number of frames if needed
-            if self.dataset_config.shrink_video_to_frames or total_frames < self.num_frames:
-                # Distribute frames evenly across the entire video
-                interval = max_frame_index / (self.num_frames - 1) if self.num_frames > 1 else 0
-                frames_to_extract = [min(int(round(i * interval)), max_frame_index) for i in range(self.num_frames)]
+            full_resampled_frames = build_time_resampled_frame_indices(
+                total_frames=total_frames,
+                source_fps=video_fps,
+                target_fps=self.dataset_config.fps,
+                temporal_compression=self.temporal_compression,
+            )
+
+            if only_load_latents:
+                # Latent caching stores the whole target-fps video. Training windows are sampled from the cache.
+                frames_to_extract = full_resampled_frames
             else:
-                # Calculate frame interval based on FPS ratio
-                fps_ratio = video_fps / self.dataset_config.fps
-                frame_interval = max(1, int(round(fps_ratio)))
-                
-                # Calculate max consecutive frames we can extract at desired FPS
-                max_consecutive_frames = (total_frames // frame_interval)
-                
-                if max_consecutive_frames < self.num_frames:
-                    # Not enough frames at desired FPS, so stretch instead
-                    interval = max_frame_index / (self.num_frames - 1) if self.num_frames > 1 else 0
-                    frames_to_extract = [min(int(round(i * interval)), max_frame_index) for i in range(self.num_frames)]
+                max_frames = normalize_video_frame_count(
+                    self.dataset_config.max_frames,
+                    self.temporal_compression,
+                )
+                if len(full_resampled_frames) > max_frames:
+                    start_frame = random.randint(0, len(full_resampled_frames) - max_frames)
+                    frames_to_extract = full_resampled_frames[start_frame:start_frame + max_frames]
                 else:
-                    # Calculate max start frame to ensure we can get all num_frames
-                    max_start_frame = max_frame_index - ((self.num_frames - 1) * frame_interval)
-                    start_frame = random.randint(0, max(0, max_start_frame))
-                    
-                    # Generate list of frames to extract
-                    frames_to_extract = [start_frame + (i * frame_interval) for i in range(self.num_frames)]
+                    frames_to_extract = full_resampled_frames
+
+            self.num_frames = len(frames_to_extract)
                     
             # Final safety check - ensure no frame exceeds max valid index
             frames_to_extract = [min(frame_idx, max_frame_index) for frame_idx in frames_to_extract]
@@ -1778,14 +1808,17 @@ class LatentCachingFileItemDTOMixin:
         self._cached_audio_latent: Union[torch.Tensor, None] = None
         self._cached_i2v_clip_latent: Union[torch.Tensor, None] = None
         self._cached_i2v_clip_condition_latent: Union[torch.Tensor, None] = None
+        self._cached_full_first_frame_latents: Union[torch.Tensor, None] = None
+        self._cached_full_audio_latent: Union[torch.Tensor, None] = None
         self._latent_path: Union[str, None] = None
+        self._cached_full_num_frames: Union[int, None] = None
         self.is_latent_cached = False
         self.is_caching_to_disk = False
         self.is_caching_to_memory = False
         self.latent_load_device = 'cpu'
         self.latent_cache_extra = kwargs.get('latent_cache_extra', None)
-        # todo, increment this if we change the latent format to invalidate cache
-        self.latent_version = 1
+        # video latents now cache the full target-fps video and window at load time.
+        self.latent_version = 2 if self.is_video else 1
 
     def get_latent_info_dict(self: 'FileItemDTO'):
         item = OrderedDict([
@@ -1805,16 +1838,15 @@ class LatentCachingFileItemDTOMixin:
             item["flip_x"] = True
         if self.flip_y:
             item["flip_y"] = True
-        if self.dataset_config.auto_frame_count:
-            # don't store num frames here as it is calculated dynamically
-            item["auto_frame_count"] = True
+        if self.is_video:
+            item["video_full_resample_cache"] = True
+            item["source_signature"] = get_quick_signature_string(self.path)
+            item["fps"] = self.dataset_config.fps
+            item["temporal_compression"] = self.temporal_compression
             is_video = True
         elif self.dataset_config.num_frames > 1:
             item["num_frames"] = self.dataset_config.num_frames
             is_video = True
-        if is_video and self.dataset_config.fps != 24:
-            # only add fps if it deviates from the default
-            item["fps"] = self.dataset_config.fps
         if is_video and self.dataset_config.do_i2v:
                 item["do_i2v"] = True
         if is_video and self.dataset_config.do_audio:
@@ -1853,6 +1885,8 @@ class LatentCachingFileItemDTOMixin:
                 self._cached_audio_latent = None
                 self._cached_i2v_clip_latent = None
                 self._cached_i2v_clip_condition_latent = None
+                self._cached_full_first_frame_latents = None
+                self._cached_full_audio_latent = None
             else:
                 # move it back to cpu
                 self._encoded_latent = self._encoded_latent.to('cpu')
@@ -1864,6 +1898,68 @@ class LatentCachingFileItemDTOMixin:
                     self._cached_i2v_clip_latent = self._cached_i2v_clip_latent.to('cpu')
                 if self._cached_i2v_clip_condition_latent is not None:
                     self._cached_i2v_clip_condition_latent = self._cached_i2v_clip_condition_latent.to('cpu')
+                if self._cached_full_first_frame_latents is not None:
+                    self._cached_full_first_frame_latents = self._cached_full_first_frame_latents.to('cpu')
+                if self._cached_full_audio_latent is not None:
+                    self._cached_full_audio_latent = self._cached_full_audio_latent.to('cpu')
+
+    def _select_cached_sequence_window(self, tensor: torch.Tensor, start_ratio: float, end_ratio: float):
+        if tensor is None or not torch.is_tensor(tensor) or tensor.dim() == 0:
+            return tensor
+        sequence_length = tensor.shape[0]
+        if sequence_length <= 1:
+            return tensor
+        start_idx = int(math.floor(sequence_length * start_ratio))
+        end_idx = int(math.ceil(sequence_length * end_ratio))
+        start_idx = max(0, min(start_idx, sequence_length - 1))
+        end_idx = max(start_idx + 1, min(end_idx, sequence_length))
+        return tensor[start_idx:end_idx]
+
+    def _select_video_latent_window(self, latent: torch.Tensor):
+        if not self.is_video or latent is None or latent.dim() != 4:
+            return latent
+
+        full_latent_frames = latent.shape[1]
+        max_latent_frames = source_frame_count_to_latent_count(
+            self.dataset_config.max_frames,
+            self.temporal_compression,
+        )
+
+        if full_latent_frames > max_latent_frames:
+            latent_start = random.randint(0, full_latent_frames - max_latent_frames)
+            latent_end = latent_start + max_latent_frames
+        else:
+            latent_start = 0
+            latent_end = full_latent_frames
+
+        selected = latent[:, latent_start:latent_end]
+        selected_latent_frames = selected.shape[1]
+        if (
+            self._cached_full_num_frames is not None
+            and latent_start == 0
+            and latent_end == full_latent_frames
+        ):
+            self.num_frames = min(self._cached_full_num_frames, self.dataset_config.max_frames)
+        else:
+            self.num_frames = latent_frame_count_to_source_count(
+                selected_latent_frames,
+                self.temporal_compression,
+            )
+
+        start_ratio = float(latent_start) / float(full_latent_frames)
+        end_ratio = float(latent_end) / float(full_latent_frames)
+
+        if self._cached_full_first_frame_latents is not None:
+            first_frame_index = min(latent_start, self._cached_full_first_frame_latents.shape[0] - 1)
+            self._cached_first_frame_latent = self._cached_full_first_frame_latents[first_frame_index]
+        if self._cached_full_audio_latent is not None:
+            self._cached_audio_latent = self._select_cached_sequence_window(
+                self._cached_full_audio_latent,
+                start_ratio,
+                end_ratio,
+            )
+
+        return selected
 
     def get_latent(self, device=None):
         if not self.is_latent_cached:
@@ -1876,9 +1972,16 @@ class LatentCachingFileItemDTOMixin:
                 device='cpu'
             )
             self._encoded_latent = state_dict['latent']
+            if 'full_num_frames' in state_dict:
+                self._cached_full_num_frames = int(state_dict['full_num_frames'].item())
+            elif 'num_frames' in state_dict:
+                self._cached_full_num_frames = int(state_dict['num_frames'].item())
+            if 'first_frame_latents' in state_dict:
+                self._cached_full_first_frame_latents = state_dict['first_frame_latents']
             if 'first_frame_latent' in state_dict:
                 self._cached_first_frame_latent = state_dict['first_frame_latent']
             if 'audio_latent' in state_dict:
+                self._cached_full_audio_latent = state_dict['audio_latent']
                 self._cached_audio_latent = state_dict['audio_latent']
             if 'i2v_clip_latent' in state_dict:
                 self._cached_i2v_clip_latent = state_dict['i2v_clip_latent']
@@ -1886,7 +1989,7 @@ class LatentCachingFileItemDTOMixin:
                 self._cached_i2v_clip_condition_latent = state_dict['i2v_clip_condition_latent']
             if 'num_frames' in state_dict:
                 self.num_frames = int(state_dict['num_frames'].item())
-        return self._encoded_latent
+        return self._select_video_latent_window(self._encoded_latent)
 
 
 class LatentCachingMixin:
@@ -1926,10 +2029,17 @@ class LatentCachingMixin:
                         # load it into memory
                         state_dict = load_file(latent_path, device='cpu')
                         file_item._encoded_latent = state_dict['latent'].to('cpu', dtype=self.sd.torch_dtype)
+                        if 'full_num_frames' in state_dict:
+                            file_item._cached_full_num_frames = int(state_dict['full_num_frames'].item())
+                        elif 'num_frames' in state_dict:
+                            file_item._cached_full_num_frames = int(state_dict['num_frames'].item())
+                        if 'first_frame_latents' in state_dict:
+                            file_item._cached_full_first_frame_latents = state_dict['first_frame_latents'].to('cpu', dtype=self.sd.torch_dtype)
                         if 'first_frame_latent' in state_dict:
                             file_item._cached_first_frame_latent = state_dict['first_frame_latent'].to('cpu', dtype=self.sd.torch_dtype)
                         if 'audio_latent' in state_dict:
-                            file_item._cached_audio_latent = state_dict['audio_latent'].to('cpu', dtype=self.sd.torch_dtype)
+                            file_item._cached_full_audio_latent = state_dict['audio_latent'].to('cpu', dtype=self.sd.torch_dtype)
+                            file_item._cached_audio_latent = file_item._cached_full_audio_latent
                         if 'i2v_clip_latent' in state_dict:
                             file_item._cached_i2v_clip_latent = state_dict['i2v_clip_latent'].to('cpu', dtype=self.sd.torch_dtype)
                         if 'i2v_clip_condition_latent' in state_dict:
@@ -1942,6 +2052,7 @@ class LatentCachingMixin:
                     device = self.sd.device_torch
                     state_dict = OrderedDict()
                     first_frame_latent = None
+                    first_frame_latents = None
                     audio_latent = None
                     i2v_clip_latent = None
                     i2v_clip_condition_latent = None
@@ -1986,11 +2097,20 @@ class LatentCachingMixin:
                         if len(frames.shape) == 4:
                             first_frames = frames
                         elif len(frames.shape) == 5:
-                            first_frames = frames[:, 0]
+                            full_latent = latent if latent is not None else state_dict['latent']
+                            latent_frame_count = full_latent.shape[1] if full_latent.dim() == 4 else 1
+                            source_frame_indices = [
+                                min(i * file_item.temporal_compression, file_item.tensor.shape[0] - 1)
+                                for i in range(latent_frame_count)
+                            ]
+                            first_frames = file_item.tensor[source_frame_indices].to(device, dtype=dtype)
                         else:
                             raise ValueError(f"Unknown frame shape {frames.shape}")
-                        first_frame_latent = self.sd.encode_images(first_frames).squeeze(0)
+                        first_frame_latents = self.sd.encode_images(first_frames)
+                        first_frame_latent = first_frame_latents[0] if first_frame_latents.dim() > 4 else first_frame_latents.squeeze(0)
                         if to_disk:
+                            if first_frame_latents.dim() > 4:
+                                state_dict['first_frame_latents'] = first_frame_latents.clone().detach().cpu()
                             state_dict['first_frame_latent'] = first_frame_latent.clone().detach().cpu()
                     
                     # audio
@@ -2001,6 +2121,7 @@ class LatentCachingMixin:
                     
                     if is_video:
                         state_dict['num_frames'] = torch.tensor(file_item.num_frames, dtype=torch.int32)
+                        state_dict['full_num_frames'] = torch.tensor(file_item.num_frames, dtype=torch.int32)
                     
                     # save_latent
                     if to_disk:
@@ -2014,8 +2135,11 @@ class LatentCachingMixin:
                         file_item._encoded_latent = latent.to('cpu', dtype=self.sd.torch_dtype)
                         if first_frame_latent is not None:
                             file_item._cached_first_frame_latent = first_frame_latent.to('cpu', dtype=self.sd.torch_dtype)
+                        if first_frame_latents is not None and first_frame_latents.dim() > 4:
+                            file_item._cached_full_first_frame_latents = first_frame_latents.to('cpu', dtype=self.sd.torch_dtype)
                         if audio_latent is not None:
-                            file_item._cached_audio_latent = audio_latent.to('cpu', dtype=self.sd.torch_dtype)
+                            file_item._cached_full_audio_latent = audio_latent.to('cpu', dtype=self.sd.torch_dtype)
+                            file_item._cached_audio_latent = file_item._cached_full_audio_latent
                         if i2v_clip_latent is not None:
                             file_item._cached_i2v_clip_latent = i2v_clip_latent.to('cpu', dtype=self.sd.torch_dtype)
                         if i2v_clip_condition_latent is not None:
@@ -2027,6 +2151,7 @@ class LatentCachingMixin:
                     del file_item.tensor
                     del state_dict
                     del first_frame_latent
+                    del first_frame_latents
                     del audio_latent
                     del i2v_clip_latent
                     del i2v_clip_condition_latent

@@ -188,6 +188,7 @@ export interface ModelConfig {
 
 export interface DualModelConfig {
   t2v_model: ModelConfig;
+  training_mode?: 'alternating' | 'paired';
   i2v_steps: number;
   t2v_steps: number;
   offload_inactive_to_cpu: boolean;

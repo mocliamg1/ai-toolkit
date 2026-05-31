@@ -228,9 +228,9 @@ class DataLoaderBatchDTO:
             self.latents: Union[torch.Tensor, None] = None
             if is_latents_cached:
                 # this get_latent call with trigger loading all cached items from the disk
-                self.latents = torch.cat(
-                    [x.get_latent().unsqueeze(0) for x in self.file_items]
-                )
+                latent_list = [x.get_latent().unsqueeze(0) for x in self.file_items]
+                self.num_frames = self.file_items[0].num_frames
+                self.latents = torch.cat(latent_list)
                 if any(
                     [x._cached_first_frame_latent is not None for x in self.file_items]
                 ):

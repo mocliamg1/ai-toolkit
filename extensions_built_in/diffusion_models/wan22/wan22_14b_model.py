@@ -875,6 +875,25 @@ class Wan2214bModel(Wan21):
             loaded_stages.add("transformer_2")
         return loaded_stages
 
+    def _require_wan22_full_transformer(
+        self,
+        transformer: DualWanTransformer3DModel,
+        action: str,
+    ):
+        loaded_stages = self._wan22_loaded_stage_names(transformer)
+        missing_stages = [
+            stage_name
+            for stage_name in ("transformer_1", "transformer_2")
+            if stage_name not in loaded_stages
+        ]
+        if len(missing_stages) == 0:
+            return
+        raise ValueError(
+            f"Wan2.2 {action} requires both transformer stages, but "
+            f"{', '.join(missing_stages)} is not loaded. Disable "
+            "`load_trainable_stages_only` or disable this action for single-stage training."
+        )
+
     def _wan22_merge_spec_targets_loaded_stage(
         self,
         merge_spec: Dict[str, Any],
@@ -1038,13 +1057,15 @@ class Wan2214bModel(Wan21):
         return transformer
 
     def get_generation_pipeline(self):
+        transformer_combo: DualWanTransformer3DModel = unwrap_model(self.model)
+        self._require_wan22_full_transformer(transformer_combo, "sampling")
         # todo unipc got broken in a diffusers update. Use euler for now.
         # scheduler = UniPCMultistepScheduler(**self._wan_generation_scheduler_config)
         scheduler = self.get_train_scheduler()
         pipeline = Wan22Pipeline(
             vae=self.vae,
-            transformer=self.model.transformer_1,
-            transformer_2=self.model.transformer_2,
+            transformer=transformer_combo.transformer_1,
+            transformer_2=transformer_combo.transformer_2,
             text_encoder=self.text_encoder,
             tokenizer=self.tokenizer,
             scheduler=scheduler,
@@ -1092,6 +1113,7 @@ class Wan2214bModel(Wan21):
 
     def save_model(self, output_path, meta, save_dtype):
         transformer_combo: DualWanTransformer3DModel = unwrap_model(self.model)
+        self._require_wan22_full_transformer(transformer_combo, "full-model saving")
         transformer_combo.transformer_1.save_pretrained(
             save_directory=os.path.join(output_path, "transformer"),
             safe_serialization=True,

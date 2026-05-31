@@ -389,6 +389,7 @@ export const modelArchs: ModelArch[] = [
       ],
       'config.process[0].dual_model': [
         {
+          training_mode: 'alternating',
           i2v_steps: 8,
           t2v_steps: 2,
           offload_inactive_to_cpu: true,

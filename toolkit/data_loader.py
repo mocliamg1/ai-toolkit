@@ -412,6 +412,17 @@ class AiToolkitDataset(LatentCachingMixin, ControlCachingMixin, CLIPCachingMixin
 
         if self.sd is None and self.is_caching_latents:
             raise ValueError(f"sd is required for caching latents")
+        if self.is_video and self.is_caching_latents:
+            missing_methods = [
+                method_name
+                for method_name in ("set_device_state_preset", "encode_images")
+                if not hasattr(self.sd, method_name)
+            ]
+            if len(missing_methods) > 0:
+                raise ValueError(
+                    "Video datasets require an sd/model object that can cache latents. "
+                    f"Missing: {', '.join(missing_methods)}"
+                )
 
         self.caption_type = dataset_config.caption_ext
         self.default_caption = dataset_config.default_caption
@@ -668,6 +679,8 @@ def get_dataloader_from_datasets(
     for config in dataset_config_list:
 
         if config.type == 'image':
+            if batch_size > 1 and (config.num_frames > 1 or config.auto_frame_count):
+                raise ValueError("Video datasets currently require batch_size=1 because clip lengths may vary.")
             dataset = AiToolkitDataset(config, batch_size=batch_size, sd=sd)
             datasets.append(dataset)
             if config.buckets:

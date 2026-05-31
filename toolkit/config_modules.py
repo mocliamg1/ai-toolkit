@@ -992,22 +992,28 @@ class DatasetConfig:
         self.replay_transforms: bool = kwargs.get('replay_transforms', True)
         
         # for video
-        # if num_frames is greater than 1, the dataloader will look for video files.
-        # num_frames will be the number of frames in the training batch. If num_frames is 1, it will look for images
-        self.num_frames: int = kwargs.get('num_frames', 1)
-        # if true, will shrink video to our frames. For instance, if we have a video with 100 frames and num_frames is 10,
-        # we would pull frame 0, 10, 20, 30, 40, 50, 60, 70, 80, 90 so they are evenly spaced
+        # max_frames is the maximum number of target-fps frames used for a training clip.
+        # legacy num_frames is kept as an alias for existing configs.
+        has_video_frame_limit = 'max_frames' in kwargs or 'max-frames' in kwargs or 'num_frames' in kwargs
+        self.max_frames: int = int(kwargs.get('max_frames', kwargs.get('max-frames', kwargs.get('num_frames', 1))))
+        self.num_frames: int = self.max_frames
+        self.fps: int = int(kwargs.get('fps', 24))
         self.shrink_video_to_frames: bool = kwargs.get('shrink_video_to_frames', True)
-        # fps is only used if shrink_video_to_frames is false. This will attempt to pull the num_frames at the given fps
-        # it will select a random start frame and pull the frames at the given fps
-        # this could have various issues with shorter videos and videos with variable fps
-        # I recommend trimming your videos to the desired length and using shrink_video_to_frames(default)
-        self.fps: int = kwargs.get('fps', 24)
         
         # auto_frame_count pull as many frames as in the video at given fps
         # Important, make sure fps for dataset is set correctly.
         # this wont work with bucketing for now until I can handle this before bucketing.
         self.auto_frame_count: bool = kwargs.get('auto_frame_count', False)
+
+        if self.num_frames > 1 or self.auto_frame_count:
+            if not has_video_frame_limit:
+                raise ValueError("Video datasets require max_frames (or legacy num_frames) to be set")
+            if self.max_frames < 1:
+                raise ValueError("Video datasets require max_frames to be at least 1")
+            if self.fps <= 0:
+                raise ValueError("Video datasets require fps to be greater than 0")
+            # Video datasets cache the full target-fps video to disk, then choose a clip window at load time.
+            self.cache_latents_to_disk = True
         
         # debug the frame count and frame selection. You dont need this. It is for debugging.
         self.debug: bool = kwargs.get('debug', False)
@@ -1402,7 +1408,7 @@ def validate_configs(
     if train_config.diff_output_preservation and train_config.blank_prompt_preservation:
         raise ValueError("Cannot use both differential output preservation and blank prompt preservation at the same time. Please set one of them to False.")
     
-    if train_config.batch_size > 1 and any(dataset_config.auto_frame_count for dataset_config in dataset_configs):
-        raise ValueError("Cannot use batch size greater than 1 with auto_frame_count. Please set batch_size to 1 or auto_frame_count to False.")
+    if train_config.batch_size > 1 and any(dataset_config.auto_frame_count or dataset_config.num_frames > 1 for dataset_config in dataset_configs):
+        raise ValueError("Cannot use batch size greater than 1 with video datasets. Please set batch_size to 1.")
 
     

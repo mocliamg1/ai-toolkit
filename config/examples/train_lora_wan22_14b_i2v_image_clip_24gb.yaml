@@ -20,9 +20,9 @@ config:
         - folder_path: "/path/to/images/folder"
           caption_ext: "txt"
           caption_dropout_rate: 0.05
-          # Keep this at 1 for still-image datasets. Do not enable latent caching
-          # with image_i2v_clip_training; clips are built dynamically per batch.
-          num_frames: 1
+          # Keep this at 1 for still-image datasets. For video folders, set max_frames and fps;
+          # videos are resampled to fps, cached as full-video latents, then randomly windowed.
+          max_frames: 1
           resolution: [512, 768, 1024]
       train:
         batch_size: 1

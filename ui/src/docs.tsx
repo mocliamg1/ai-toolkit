@@ -210,6 +210,7 @@ const docs: { [key: string]: ConfigDoc } = {
     description: (
       <>
         Number of optimizer steps to train the shared LoRA on the Wan 2.2 I2V model before switching to the T2V model.
+        In paired mode, this becomes the I2V loss ratio numerator.
       </>
     ),
   },
@@ -218,6 +219,17 @@ const docs: { [key: string]: ConfigDoc } = {
     description: (
       <>
         Number of optimizer steps to train the same shared LoRA on the Wan 2.2 T2V model before switching back to I2V.
+        In paired mode, this becomes the T2V loss ratio numerator.
+      </>
+    ),
+  },
+  'dual_model.training_mode': {
+    title: 'Dual Training Mode',
+    description: (
+      <>
+        Alternating mode trains one model per optimizer step. Paired mode trains I2V and T2V before one optimizer step,
+        weighted by <code>i2v_steps / (i2v_steps + t2v_steps)</code> and{' '}
+        <code>t2v_steps / (i2v_steps + t2v_steps)</code>.
       </>
     ),
   },
