@@ -1,10 +1,14 @@
 import os
 import sys
+from types import SimpleNamespace
+
+import torch
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from toolkit.config_modules import DatasetConfig
 from toolkit.dataloader_mixins import (
+    LatentCachingFileItemDTOMixin,
     build_time_resampled_frame_indices,
     latent_frame_count_to_source_count,
     normalize_video_frame_count,
@@ -69,9 +73,28 @@ def test_video_frame_count_normalizes_to_temporal_compression():
     assert latent_frame_count_to_source_count(10, 4) == 37
 
 
+def test_cached_video_window_uses_start_segment_and_start_frame_conditioning():
+    item = SimpleNamespace(
+        is_video=True,
+        temporal_compression=4,
+        dataset_config=SimpleNamespace(max_frames=5),
+        _cached_full_num_frames=17,
+        _cached_full_first_frame_latents=torch.arange(5 * 16 * 1 * 2 * 2).view(5, 16, 1, 2, 2),
+        _cached_full_audio_latent=None,
+        num_frames=17,
+    )
+    latent = torch.arange(16 * 5 * 2 * 2).view(16, 5, 2, 2)
+
+    selected = LatentCachingFileItemDTOMixin._select_video_latent_window(item, latent)
+
+    assert torch.equal(selected, latent[:, :2])
+    assert torch.equal(item._cached_first_frame_latent, item._cached_full_first_frame_latents[0])
+
+
 if __name__ == "__main__":
     test_dataset_config_accepts_max_frames_aliases_and_forces_video_disk_cache()
     test_dataset_config_rejects_video_without_positive_fps()
     test_time_resampling_preserves_duration_when_downsampling_30fps_to_16fps()
     test_time_resampling_duplicates_frames_when_target_fps_is_higher()
     test_video_frame_count_normalizes_to_temporal_compression()
+    test_cached_video_window_uses_start_segment_and_start_frame_conditioning()

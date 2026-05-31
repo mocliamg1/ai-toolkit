@@ -597,8 +597,7 @@ class ImageProcessingDTOMixin:
                     self.temporal_compression,
                 )
                 if len(full_resampled_frames) > max_frames:
-                    start_frame = random.randint(0, len(full_resampled_frames) - max_frames)
-                    frames_to_extract = full_resampled_frames[start_frame:start_frame + max_frames]
+                    frames_to_extract = full_resampled_frames[:max_frames]
                 else:
                     frames_to_extract = full_resampled_frames
 
@@ -1925,11 +1924,10 @@ class LatentCachingFileItemDTOMixin:
             self.temporal_compression,
         )
 
+        latent_start = 0
         if full_latent_frames > max_latent_frames:
-            latent_start = random.randint(0, full_latent_frames - max_latent_frames)
-            latent_end = latent_start + max_latent_frames
+            latent_end = max_latent_frames
         else:
-            latent_start = 0
             latent_end = full_latent_frames
 
         selected = latent[:, latent_start:latent_end]
@@ -1950,8 +1948,7 @@ class LatentCachingFileItemDTOMixin:
         end_ratio = float(latent_end) / float(full_latent_frames)
 
         if self._cached_full_first_frame_latents is not None:
-            first_frame_index = min(latent_start, self._cached_full_first_frame_latents.shape[0] - 1)
-            self._cached_first_frame_latent = self._cached_full_first_frame_latents[first_frame_index]
+            self._cached_first_frame_latent = self._cached_full_first_frame_latents[0]
         if self._cached_full_audio_latent is not None:
             self._cached_audio_latent = self._select_cached_sequence_window(
                 self._cached_full_audio_latent,
