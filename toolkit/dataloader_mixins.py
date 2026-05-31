@@ -712,7 +712,7 @@ class ImageProcessingDTOMixin:
                         source_duration = 0.0
 
                     # Target duration is how this sampled/stretched clip is interpreted for training
-                    # (i.e. num_frames at the configured dataset FPS).
+                    # (i.e. num_frames at the configured target FPS).
                     if hasattr(self.dataset_config, "fps") and self.dataset_config.fps and self.dataset_config.fps > 0:
                         target_duration = float(self.num_frames) / float(self.dataset_config.fps)
                     else:
@@ -747,7 +747,7 @@ class ImageProcessingDTOMixin:
                     if waveform is not None and waveform.numel() > 0:
                         target_samples = int(round(target_duration * sample_rate))
                         if target_samples > 0 and waveform.shape[-1] != target_samples:
-                            # Time-stretch/shrink to match the video clip duration implied by dataset FPS.
+                            # Time-stretch/shrink to match the video clip duration implied by target FPS.
                             if self.dataset_config.audio_preserve_pitch:
                                 waveform = time_stretch_preserve_pitch(waveform, sample_rate, target_samples)  # waveform is [C, L]
                             else:

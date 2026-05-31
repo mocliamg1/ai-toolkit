@@ -365,23 +365,28 @@ const docs: { [key: string]: ConfigDoc } = {
       </>
     ),
   },
-  'datasets.num_frames': {
-    title: 'Number of Frames',
+  'datasets.max_frames': {
+    title: 'Max Frames',
     description: (
       <>
-        This sets the number of frames to shrink videos to for a video dataset. If this dataset is images, set this to 1
-        for one frame. If your dataset is only videos, frames will be extracted evenly spaced from the videos in the
-        dataset.
+        This sets the maximum number of target-FPS frames used for each training clip. Video datasets are resampled to
+        the target FPS, cached as full-video latents, then a random window up to this length is selected for each
+        training item. If this dataset is images, set this to 1.
         <br />
         <br />
-        It is best to trim your videos to the proper length before training. Wan is 16 frames a second. Doing 81 frames
-        will result in a 5 second video. So you would want all of your videos trimmed to around 5 seconds for best
-        results.
-        <br />
-        <br />
-        Example: Setting this to 81 and having 2 videos in your dataset, one is 2 seconds and one is 90 seconds long,
-        will result in 81 evenly spaced frames for each video making the 2 second video appear slow and the 90second
-        video appear very fast.
+        For example, with target FPS 16, max frames 81 is about a five second training window. Longer videos stay normal
+        speed and contribute random windows instead of being slowed down.
+      </>
+    ),
+  },
+  'datasets.fps': {
+    title: 'Target FPS',
+    description: (
+      <>
+        This is the target FPS used to resample video clips before latent caching. Each source clip's FPS is read
+        automatically from that clip's metadata, so clips in the same dataset can have different source frame rates.
+        Clips keep their real-time duration: frames are selected by timestamp on the target timeline instead of keeping
+        every source frame and replaying it slower.
       </>
     ),
   },

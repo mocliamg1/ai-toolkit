@@ -104,7 +104,7 @@ export const handleModelArchChange = (
   // update datasets
   const hasControlPath = newArch?.additionalSections?.includes('datasets.control_path') || false;
   const hasMultiControlPaths = newArch?.additionalSections?.includes('datasets.multi_control_paths') || false;
-  const hasNumFrames = newArch?.additionalSections?.includes('datasets.num_frames') || false;
+  const hasMaxFrames = newArch?.additionalSections?.includes('datasets.max_frames') || false;
   const controls = newArch?.controls ?? [];
   const datasets = jobConfig.config.process[0].datasets.map(dataset => {
     const newDataset = objectCopy(dataset);
@@ -152,8 +152,16 @@ export const handleModelArchChange = (
         delete newDataset.control_path_3;
       }
     }
-    if (!hasNumFrames) {
-      newDataset.num_frames = 1; // reset num_frames if not applicable
+    if (!hasMaxFrames) {
+      newDataset.max_frames = 1;
+      newDataset.fps = 16;
+    } else {
+      newDataset.max_frames = newDataset.max_frames ?? newDataset.num_frames ?? 1;
+      newDataset.fps = newDataset.fps ?? 16;
+      newDataset.cache_latents_to_disk = true;
+    }
+    if ('num_frames' in newDataset) {
+      delete newDataset.num_frames;
     }
     return newDataset;
   });

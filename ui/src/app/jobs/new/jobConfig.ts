@@ -16,7 +16,8 @@ export const defaultDatasetConfig: DatasetConfig = {
   resolution: [512, 768, 1024],
   controls: [],
   shrink_video_to_frames: true,
-  num_frames: 1,
+  max_frames: 1,
+  fps: 16,
   flip_x: false,
   flip_y: false,
   num_repeats: 1,
@@ -158,6 +159,18 @@ export const migrateJobConfig = (jobConfig: JobConfig): JobConfig => {
   if (isMac()) {
     jobConfig.config.process[0].device = 'mps';
   }
+
+  jobConfig.config.process[0].datasets = jobConfig.config.process[0].datasets.map(dataset => {
+    const migratedDataset = { ...dataset };
+    if (!('max_frames' in migratedDataset) && 'num_frames' in migratedDataset) {
+      migratedDataset.max_frames = migratedDataset.num_frames;
+    }
+    if (!('fps' in migratedDataset)) {
+      migratedDataset.fps = 16;
+    }
+    delete migratedDataset.num_frames;
+    return migratedDataset;
+  });
 
   return jobConfig;
 };

@@ -63,11 +63,17 @@ def _make_i2v_model(in_channels=26):
     model.vae = object()
     model.image_i2v_conditioning = False
     model.image_i2v_conditioning_prob = 0.2
+    model.image_i2v_conditioning_preserve_color_stats = False
     model.image_i2v_clip_training = False
     model.image_i2v_clip_training_prob = 0.25
     model.image_i2v_clip_num_frames = 5
     model.image_i2v_clip_blur_sigma = 24.0
     model.image_i2v_clip_downscale_factor = 0.0625
+    model.image_i2v_clip_preserve_color_stats = False
+    model.image_i2v_clip_target_blur_sigma = 0.0
+    model.image_i2v_clip_target_downscale_factor = 1.0
+    model.image_i2v_clip_target_preserve_color_stats = False
+    model.image_i2v_clip_training_stages = None
     return model
 
 
@@ -304,6 +310,30 @@ def test_image_clip_conditioning_preserves_shape_dtype_device_and_range():
     assert not torch.equal(conditioned, source)
 
 
+def test_image_clip_conditioning_can_preserve_channel_stats():
+    source = torch.linspace(-0.5, 0.5, steps=2 * 3 * 8 * 8, dtype=torch.float32)
+    source = source.reshape(2, 3, 8, 8)
+
+    conditioned = Wan2214bI2VModel.make_image_i2v_clip_conditioning(
+        source,
+        blur_sigma=4.0,
+        downscale_factor=0.25,
+        preserve_color_stats=True,
+    )
+
+    assert torch.allclose(
+        conditioned.mean(dim=(-2, -1)),
+        source.mean(dim=(-2, -1)),
+        atol=1e-4,
+    )
+    assert torch.allclose(
+        conditioned.std(dim=(-2, -1), unbiased=False),
+        source.std(dim=(-2, -1), unbiased=False),
+        atol=1e-4,
+    )
+    assert not torch.equal(conditioned, source)
+
+
 def test_image_clip_training_preprocess_expands_single_images_to_clean_static_clip():
     model = _make_i2v_model()
     model.image_i2v_clip_training = True
@@ -353,10 +383,50 @@ def test_image_clip_training_probability_zero_keeps_single_image_batch():
     assert processed.i2v_condition_tensor is None
 
 
+def test_image_clip_training_can_low_pass_fake_clip_target():
+    model = _make_i2v_model()
+    model.image_i2v_clip_training = True
+    model.image_i2v_clip_training_prob = 1.0
+    model.image_i2v_clip_num_frames = 5
+    model.image_i2v_clip_target_blur_sigma = 2.0
+    model.image_i2v_clip_target_downscale_factor = 0.5
+    model.image_i2v_clip_target_preserve_color_stats = True
+    source = torch.linspace(-0.5, 0.5, steps=1 * 3 * 16 * 16, dtype=torch.float32)
+    source = source.reshape(1, 3, 16, 16)
+    batch = SimpleNamespace(
+        tensor=source.clone(),
+        latents=None,
+        i2v_condition_tensor=None,
+        num_frames=1,
+        dataset_config=SimpleNamespace(num_frames=1),
+    )
+
+    processed = model.preprocess_training_batch(batch)
+
+    assert processed.tensor.shape == (1, 5, 3, 16, 16)
+    assert not torch.equal(processed.tensor[:, 0], source)
+    assert torch.allclose(
+        processed.tensor[:, 0].mean(dim=(-2, -1)),
+        source.mean(dim=(-2, -1)),
+        atol=1e-4,
+    )
+    assert torch.allclose(
+        processed.tensor[:, 0].std(dim=(-2, -1), unbiased=False),
+        source.std(dim=(-2, -1), unbiased=False),
+        atol=1e-4,
+    )
+
+
 def test_image_clip_training_probability_values_clamp_to_unit_interval():
     assert Wan2214bI2VModel._clamp_probability(-1.0) == 0.0
     assert Wan2214bI2VModel._clamp_probability(0.5) == 0.5
     assert Wan2214bI2VModel._clamp_probability(2.0) == 1.0
+
+
+def test_image_clip_training_stage_values_normalize():
+    assert Wan2214bI2VModel._normalize_clip_training_stages("all") is None
+    assert Wan2214bI2VModel._normalize_clip_training_stages("high") == {0}
+    assert Wan2214bI2VModel._normalize_clip_training_stages(["low", 0]) == {0, 1}
 
 
 def test_image_clip_num_frames_normalizes_to_wan_frame_count():
@@ -403,6 +473,49 @@ def test_image_clip_training_uses_cached_clip_latents():
     assert processed.latents is clip_latents
     assert processed.i2v_condition_latents is clip_condition_latents
     assert processed.num_frames == 9
+
+
+def test_image_clip_training_respects_high_noise_stage_filter():
+    model = _make_i2v_model()
+    model.image_i2v_clip_training = True
+    model.image_i2v_clip_training_prob = 1.0
+    model.image_i2v_clip_training_stages = {0}
+    source = torch.randn(1, 3, 8, 8)
+    batch = SimpleNamespace(
+        tensor=source,
+        latents=None,
+        i2v_condition_tensor=None,
+        num_frames=1,
+        current_multistage_boundary_index=0,
+        dataset_config=SimpleNamespace(num_frames=1),
+    )
+
+    processed = model.preprocess_training_batch(batch)
+
+    assert processed.tensor.shape == (1, 5, 3, 8, 8)
+    assert processed.num_frames == 5
+
+
+def test_image_clip_training_skips_low_noise_stage_when_filtered_to_high():
+    model = _make_i2v_model()
+    model.image_i2v_clip_training = True
+    model.image_i2v_clip_training_prob = 1.0
+    model.image_i2v_clip_training_stages = {0}
+    source = torch.randn(1, 3, 8, 8)
+    batch = SimpleNamespace(
+        tensor=source,
+        latents=None,
+        i2v_condition_tensor=None,
+        num_frames=1,
+        current_multistage_boundary_index=1,
+        dataset_config=SimpleNamespace(num_frames=1),
+    )
+
+    processed = model.preprocess_training_batch(batch)
+
+    assert processed.tensor is source
+    assert processed.num_frames == 1
+    assert processed.i2v_condition_tensor is None
 
 
 def test_image_clip_training_leaves_video_latents_alone():

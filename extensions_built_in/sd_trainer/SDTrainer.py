@@ -915,6 +915,8 @@ class SDTrainer(BaseSDTrainProcess):
 
     def preprocess_batch(self, batch: 'DataLoaderBatchDTO'):
         if hasattr(self.sd, "preprocess_training_batch"):
+            if getattr(self.sd, "is_multistage", False):
+                batch.current_multistage_boundary_index = self.current_boundary_index
             return self.sd.preprocess_training_batch(batch)
         return batch
 

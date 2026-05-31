@@ -716,8 +716,7 @@ export default function SimpleJob({
                           jobConfig.config.process[0].model.model_kwargs?.image_i2v_clip_num_frames ?? 5;
                         setJobConfig(clipFrames, 'config.process[0].sample.num_frames');
                         jobConfig.config.process[0].datasets.forEach((_, i) => {
-                          setJobConfig(1, `config.process[0].datasets[${i}].num_frames`);
-                          setJobConfig(false, `config.process[0].datasets[${i}].cache_latents_to_disk`);
+                          setJobConfig(1, `config.process[0].datasets[${i}].max_frames`);
                         });
                       }
                     }}
@@ -1501,14 +1500,26 @@ export default function SimpleJob({
                         min={0}
                         required
                       />
-                      {modelArch?.additionalSections?.includes('datasets.num_frames') && !dataset.auto_frame_count && (
+                      {modelArch?.additionalSections?.includes('datasets.max_frames') && !dataset.auto_frame_count && (
                         <NumberInput
-                          label="Num Frames"
+                          label="Max Frames"
                           className="pt-2"
-                          docKey="datasets.num_frames"
-                          value={dataset.num_frames}
-                          onChange={value => setJobConfig(value, `config.process[0].datasets[${i}].num_frames`)}
+                          docKey="datasets.max_frames"
+                          value={dataset.max_frames}
+                          onChange={value => setJobConfig(value, `config.process[0].datasets[${i}].max_frames`)}
                           placeholder="eg. 41"
+                          min={1}
+                          required
+                        />
+                      )}
+                      {modelArch?.additionalSections?.includes('datasets.fps') && (
+                        <NumberInput
+                          label="Target FPS"
+                          className="pt-2"
+                          docKey="datasets.fps"
+                          value={dataset.fps}
+                          onChange={value => setJobConfig(value, `config.process[0].datasets[${i}].fps`)}
+                          placeholder="eg. 16"
                           min={1}
                           required
                         />
@@ -1518,10 +1529,11 @@ export default function SimpleJob({
                       <FormGroup label="Settings" className="">
                         <Checkbox
                           label="Cache Latents"
-                          checked={dataset.cache_latents_to_disk || false}
+                          checked={modelArch?.additionalSections?.includes('datasets.max_frames') || dataset.cache_latents_to_disk || false}
                           onChange={value =>
                             setJobConfig(value, `config.process[0].datasets[${i}].cache_latents_to_disk`)
                           }
+                          disabled={modelArch?.additionalSections?.includes('datasets.max_frames')}
                         />
                         <Checkbox
                           label="Is Regularization"
@@ -1764,7 +1776,7 @@ export default function SimpleJob({
                   {isVideoModel && (
                     <div>
                       <NumberInput
-                        label="Num Frames"
+                        label="Sample Frames"
                         value={jobConfig.config.process[0].sample.num_frames}
                         onChange={value => setJobConfig(value, 'config.process[0].sample.num_frames')}
                         placeholder="eg. 0"

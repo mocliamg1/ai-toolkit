@@ -36,6 +36,9 @@ class Wan2214bI2VModel(Wan2214bModel):
         self.image_i2v_conditioning_prob = max(
             0.0, min(1.0, self.image_i2v_conditioning_prob)
         )
+        self.image_i2v_conditioning_preserve_color_stats = model_kwargs.get(
+            "image_i2v_conditioning_preserve_color_stats", False
+        )
         self.image_i2v_clip_training = model_kwargs.get(
             "image_i2v_clip_training", False
         )
@@ -55,6 +58,25 @@ class Wan2214bI2VModel(Wan2214bModel):
                 float(model_kwargs.get("image_i2v_clip_downscale_factor", 0.0625)),
             ),
         )
+        self.image_i2v_clip_preserve_color_stats = model_kwargs.get(
+            "image_i2v_clip_preserve_color_stats", False
+        )
+        self.image_i2v_clip_target_blur_sigma = max(
+            0.0, float(model_kwargs.get("image_i2v_clip_target_blur_sigma", 0.0))
+        )
+        self.image_i2v_clip_target_downscale_factor = max(
+            0.0,
+            min(
+                1.0,
+                float(model_kwargs.get("image_i2v_clip_target_downscale_factor", 1.0)),
+            ),
+        )
+        self.image_i2v_clip_target_preserve_color_stats = model_kwargs.get(
+            "image_i2v_clip_target_preserve_color_stats", False
+        )
+        self.image_i2v_clip_training_stages = self._normalize_clip_training_stages(
+            model_kwargs.get("image_i2v_clip_training_stages", "all")
+        )
 
     @staticmethod
     def _clamp_probability(value) -> float:
@@ -66,6 +88,46 @@ class Wan2214bI2VModel(Wan2214bModel):
         if num_frames % 4 != 1:
             num_frames = (num_frames // 4) * 4 + 1
         return max(1, num_frames)
+
+    @staticmethod
+    def _normalize_clip_training_stages(value):
+        if value is None:
+            return None
+
+        if isinstance(value, str):
+            normalized_value = value.strip().lower()
+            if normalized_value in ("all", "both", "*"):
+                return None
+            values = [normalized_value]
+        elif isinstance(value, (list, tuple, set)):
+            values = value
+        else:
+            values = [value]
+
+        stage_aliases = {
+            0: 0,
+            1: 1,
+            "0": 0,
+            "1": 1,
+            "high": 0,
+            "high_noise": 0,
+            "transformer_1": 0,
+            "low": 1,
+            "low_noise": 1,
+            "transformer_2": 1,
+        }
+        stages = set()
+        for stage in values:
+            key = stage.strip().lower() if isinstance(stage, str) else stage
+            if key in ("all", "both", "*"):
+                return None
+            if key not in stage_aliases:
+                raise ValueError(
+                    "image_i2v_clip_training_stages must contain only "
+                    "'high', 'low', 0, 1, or 'all'"
+                )
+            stages.add(stage_aliases[key])
+        return stages
 
     @staticmethod
     def _get_blur_kernel_size(length: int, sigma: float) -> int:
@@ -81,7 +143,24 @@ class Wan2214bI2VModel(Wan2214bModel):
         return max(1, min(desired, max_kernel))
 
     @staticmethod
-    def degrade_image_i2v_conditioning(first_frames: torch.Tensor) -> torch.Tensor:
+    def _match_channel_stats(
+        tensor: torch.Tensor,
+        reference: torch.Tensor,
+        eps: float = 1e-6,
+    ) -> torch.Tensor:
+        tensor_mean = tensor.mean(dim=(-2, -1), keepdim=True)
+        tensor_std = tensor.std(dim=(-2, -1), keepdim=True, unbiased=False)
+        reference_mean = reference.mean(dim=(-2, -1), keepdim=True)
+        reference_std = reference.std(dim=(-2, -1), keepdim=True, unbiased=False)
+        return (tensor - tensor_mean) / (tensor_std + eps) * reference_std + reference_mean
+
+    @classmethod
+    def degrade_image_i2v_conditioning(
+        cls,
+        first_frames: torch.Tensor,
+        preserve_color_stats: bool = False,
+    ) -> torch.Tensor:
+        reference = first_frames.to(dtype=torch.float32)
         degraded = first_frames
         if degraded.shape[-1] >= 3 and degraded.shape[-2] >= 3:
             degraded = TF.gaussian_blur(degraded, kernel_size=[3, 3], sigma=[0.1, 1.0])
@@ -95,6 +174,12 @@ class Wan2214bI2VModel(Wan2214bModel):
         noise = torch.randn_like(degraded) * 0.025
         degraded = degraded + noise
 
+        if preserve_color_stats:
+            degraded = cls._match_channel_stats(
+                degraded.to(dtype=torch.float32),
+                reference,
+            ).to(dtype=first_frames.dtype)
+
         return degraded.clamp(-1.0, 1.0)
 
     @classmethod
@@ -103,9 +188,11 @@ class Wan2214bI2VModel(Wan2214bModel):
         images: torch.Tensor,
         blur_sigma: float = 24.0,
         downscale_factor: float = 0.0625,
+        preserve_color_stats: bool = False,
     ) -> torch.Tensor:
         condition = images.to(dtype=torch.float32)
         source_dtype = images.dtype
+        reference = condition
         _, _, height, width = condition.shape
 
         downscale_factor = max(0.0, min(1.0, float(downscale_factor)))
@@ -134,6 +221,9 @@ class Wan2214bI2VModel(Wan2214bModel):
                 kernel_size=[kernel_height, kernel_width],
                 sigma=[blur_sigma, blur_sigma],
             )
+
+        if preserve_color_stats:
+            condition = cls._match_channel_stats(condition, reference)
 
         return condition.clamp(-1.0, 1.0).to(dtype=source_dtype)
 
@@ -181,6 +271,36 @@ class Wan2214bI2VModel(Wan2214bModel):
             < getattr(self, "image_i2v_clip_training_prob", 0.25)
         )
 
+    def _should_use_image_i2v_clip_training_stage(
+        self, batch: DataLoaderBatchDTO
+    ) -> bool:
+        stages = getattr(self, "image_i2v_clip_training_stages", None)
+        if stages is None:
+            return True
+
+        current_stage = getattr(batch, "current_multistage_boundary_index", None)
+        if current_stage is None:
+            return False
+        return int(current_stage) in stages
+
+    def make_image_i2v_clip_target(self, images: torch.Tensor) -> torch.Tensor:
+        if (
+            getattr(self, "image_i2v_clip_target_blur_sigma", 0.0) <= 0.0
+            and getattr(self, "image_i2v_clip_target_downscale_factor", 1.0) >= 1.0
+        ):
+            return images
+
+        return self.make_image_i2v_clip_conditioning(
+            images,
+            blur_sigma=getattr(self, "image_i2v_clip_target_blur_sigma", 0.0),
+            downscale_factor=getattr(
+                self, "image_i2v_clip_target_downscale_factor", 1.0
+            ),
+            preserve_color_stats=getattr(
+                self, "image_i2v_clip_target_preserve_color_stats", False
+            ),
+        )
+
     def get_latent_cache_extra(self) -> dict:
         if not getattr(self, "image_i2v_clip_training", False):
             return {}
@@ -189,6 +309,10 @@ class Wan2214bI2VModel(Wan2214bModel):
             "image_i2v_clip_num_frames": self.image_i2v_clip_num_frames,
             "image_i2v_clip_blur_sigma": self.image_i2v_clip_blur_sigma,
             "image_i2v_clip_downscale_factor": self.image_i2v_clip_downscale_factor,
+            "image_i2v_clip_preserve_color_stats": self.image_i2v_clip_preserve_color_stats,
+            "image_i2v_clip_target_blur_sigma": self.image_i2v_clip_target_blur_sigma,
+            "image_i2v_clip_target_downscale_factor": self.image_i2v_clip_target_downscale_factor,
+            "image_i2v_clip_target_preserve_color_stats": self.image_i2v_clip_target_preserve_color_stats,
         }
 
     @torch.no_grad()
@@ -199,7 +323,8 @@ class Wan2214bI2VModel(Wan2214bModel):
             return {}
 
         images = images.to(self.device_torch, dtype=self.torch_dtype)
-        clip_tensor = images.unsqueeze(1).expand(
+        clip_target = self.make_image_i2v_clip_target(images)
+        clip_tensor = clip_target.unsqueeze(1).expand(
             -1,
             self.image_i2v_clip_num_frames,
             -1,
@@ -207,11 +332,13 @@ class Wan2214bI2VModel(Wan2214bModel):
             -1,
         )
         clip_latent = self.encode_images(clip_tensor)
+        del clip_target
         del clip_tensor
         condition = self.make_image_i2v_clip_conditioning(
             images,
             blur_sigma=self.image_i2v_clip_blur_sigma,
             downscale_factor=self.image_i2v_clip_downscale_factor,
+            preserve_color_stats=self.image_i2v_clip_preserve_color_stats,
         )
         self._ensure_vae_on_device(clip_latent.device)
         condition_latent = get_first_frame_conditioning(
@@ -231,6 +358,9 @@ class Wan2214bI2VModel(Wan2214bModel):
             return batch
 
         if not self._is_single_frame_batch(batch):
+            return batch
+
+        if not self._should_use_image_i2v_clip_training_stage(batch):
             return batch
 
         if not self._should_use_image_i2v_clip_training():
@@ -264,14 +394,19 @@ class Wan2214bI2VModel(Wan2214bModel):
             downscale_factor=getattr(
                 self, "image_i2v_clip_downscale_factor", 0.0625
             ),
+            preserve_color_stats=getattr(
+                self, "image_i2v_clip_preserve_color_stats", False
+            ),
         )
-        batch.tensor = images.unsqueeze(1).repeat(
+        clip_target = self.make_image_i2v_clip_target(images)
+        batch.tensor = clip_target.unsqueeze(1).repeat(
             1,
             getattr(self, "image_i2v_clip_num_frames", 5),
             1,
             1,
             1,
         )
+        del clip_target
         batch.num_frames = getattr(self, "image_i2v_clip_num_frames", 5)
         return batch
 
@@ -431,7 +566,14 @@ class Wan2214bI2VModel(Wan2214bModel):
             with torch.no_grad():
                 first_frames = self._get_first_frames_from_batch(batch)
                 if should_use_degraded_image_conditioning:
-                    first_frames = self.degrade_image_i2v_conditioning(first_frames)
+                    first_frames = self.degrade_image_i2v_conditioning(
+                        first_frames,
+                        preserve_color_stats=getattr(
+                            self,
+                            "image_i2v_conditioning_preserve_color_stats",
+                            False,
+                        ),
+                    )
 
                 # Add conditioning using the standalone function
                 self._ensure_vae_on_device(latent_model_input.device)

@@ -55,10 +55,19 @@ config:
           train_high_noise: true
           train_low_noise: true
           image_i2v_clip_training: true
-          image_i2v_clip_training_prob: 0.25
+          # Static fake clips are useful for teaching image conditioning, but training
+          # them on the low-noise stage can over-reward duplicated high-frequency detail.
+          image_i2v_clip_training_stages: ["high"]
+          image_i2v_clip_training_prob: 0.15
           image_i2v_clip_num_frames: 5
+          image_i2v_clip_preserve_color_stats: true
           image_i2v_clip_blur_sigma: 24.0
           image_i2v_clip_downscale_factor: 0.0625
+          # Low-pass only the fake clip target frames. This keeps the color/composition
+          # benefit of fake clips without pushing the LoRA as hard toward crisp static copies.
+          image_i2v_clip_target_blur_sigma: 2.0
+          image_i2v_clip_target_downscale_factor: 0.5
+          image_i2v_clip_target_preserve_color_stats: true
       sample:
         sampler: "flowmatch"
         sample_every: 250
