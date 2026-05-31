@@ -565,6 +565,34 @@ def test_image_clip_condition_tensor_is_used_for_i2v_conditioning(monkeypatch):
     assert torch.equal(model.model.hidden_states[-1], sentinel)
 
 
+def test_cached_video_first_frame_latents_are_used_without_pixel_tensor():
+    model = _make_i2v_model(in_channels=36)
+    latent_model_input = torch.randn(1, 16, 3, 2, 2)
+    first_frame_latents = torch.randn(1, 16, 1, 2, 2)
+    batch = SimpleNamespace(
+        tensor=None,
+        latents=latent_model_input,
+        first_frame_latents=first_frame_latents,
+        num_frames=9,
+        dataset_config=SimpleNamespace(num_frames=9),
+    )
+
+    model.get_noise_prediction(
+        latent_model_input=latent_model_input,
+        timestep=torch.tensor([1]),
+        text_embeddings=_make_prompt_embeds(),
+        batch=batch,
+    )
+
+    hidden_states = model.model.hidden_states[-1]
+    assert hidden_states.shape == (1, 36, 3, 2, 2)
+    assert torch.equal(hidden_states[:, :16], latent_model_input)
+    assert torch.count_nonzero(hidden_states[:, 16:20, 0]) > 0
+    assert torch.count_nonzero(hidden_states[:, 16:20, 1:]) == 0
+    assert torch.equal(hidden_states[:, 20:36, 0:1], first_frame_latents)
+    assert torch.count_nonzero(hidden_states[:, 20:36, 1:]) == 0
+
+
 def _make_concept_slider_trainer(arch):
     trainer = object.__new__(ConceptSliderTrainer)
     trainer.sd = SimpleNamespace(

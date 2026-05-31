@@ -234,11 +234,115 @@ class Wan2214bI2VModel(Wan2214bModel):
             return i2v_condition_tensor
 
         frames = batch.tensor
+        if frames is None:
+            raise ValueError(
+                "Wan2.2 I2V needs pixel frames or cached first-frame latents for conditioning. "
+                "If this dataset is cached, delete old _latent_cache entries and recache it."
+            )
         if len(frames.shape) == 4:
             return frames
         if len(frames.shape) == 5:
             return frames[:, 0]
         raise ValueError(f"Unknown frame shape {frames.shape}")
+
+    def _add_cached_first_frame_conditioning(
+        self,
+        latent_model_input: torch.Tensor,
+        first_frame_latents: torch.Tensor,
+    ) -> torch.Tensor:
+        condition_latents = first_frame_latents.to(
+            latent_model_input.device,
+            dtype=latent_model_input.dtype,
+        )
+        if condition_latents.dim() == 4:
+            condition_latents = condition_latents.unsqueeze(0)
+        if condition_latents.dim() != 5:
+            raise ValueError(f"Unknown cached first-frame latent shape {condition_latents.shape}")
+
+        if condition_latents.shape[0] != latent_model_input.shape[0]:
+            condition_latents = condition_latents.expand(latent_model_input.shape[0], -1, -1, -1, -1)
+
+        condition_latents = condition_latents[:, :, :1]
+
+        if condition_latents.shape[-2:] != latent_model_input.shape[-2:]:
+            condition_latents = F.interpolate(
+                condition_latents,
+                size=(
+                    condition_latents.shape[2],
+                    latent_model_input.shape[3],
+                    latent_model_input.shape[4],
+                ),
+                mode="trilinear",
+                align_corners=False,
+            )
+
+        num_latent_frames = latent_model_input.shape[2]
+        expanded_condition = torch.zeros(
+            condition_latents.shape[0],
+            condition_latents.shape[1],
+            num_latent_frames,
+            condition_latents.shape[3],
+            condition_latents.shape[4],
+            device=condition_latents.device,
+            dtype=condition_latents.dtype,
+        )
+        expanded_condition[:, :, :1] = condition_latents
+        condition_latents = expanded_condition
+
+        target_in_channels = self._get_target_in_channels()
+        mask_channels = 4
+        if target_in_channels is not None:
+            mask_channels = target_in_channels - latent_model_input.shape[1] - condition_latents.shape[1]
+            if mask_channels < 1:
+                raise ValueError(
+                    f"Wan2.2 I2V cached conditioning cannot fit transformer input: "
+                    f"{latent_model_input.shape[1]} latent channels, "
+                    f"{condition_latents.shape[1]} condition channels, "
+                    f"{target_in_channels} target channels."
+                )
+
+        mask = torch.zeros(
+            condition_latents.shape[0],
+            mask_channels,
+            num_latent_frames,
+            condition_latents.shape[3],
+            condition_latents.shape[4],
+            device=condition_latents.device,
+            dtype=condition_latents.dtype,
+        )
+        mask[:, :, 0] = 1
+        return torch.cat([latent_model_input, mask, condition_latents], dim=1)
+
+    def _get_target_in_channels(self) -> int:
+        target_in_channels = getattr(
+            getattr(self.model, "patch_embedding", None), "in_channels", None
+        )
+        if target_in_channels is None and hasattr(self.model, "config"):
+            target_in_channels = getattr(self.model.config, "in_channels", None)
+        if target_in_channels is None and hasattr(self.model, "patch_embedding"):
+            target_in_channels = self.model.patch_embedding.weight.shape[1]
+        return target_in_channels
+
+    def _match_conditioning_channels(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        target_in_channels = self._get_target_in_channels()
+        if target_in_channels is None or hidden_states.shape[1] == target_in_channels:
+            return hidden_states
+        if hidden_states.shape[1] > target_in_channels:
+            raise ValueError(
+                f"Wan2.2 I2V conditioning produced {hidden_states.shape[1]} channels, "
+                f"but the transformer expects {target_in_channels}."
+            )
+
+        padding = torch.zeros(
+            hidden_states.shape[0],
+            target_in_channels - hidden_states.shape[1],
+            hidden_states.shape[2],
+            hidden_states.shape[3],
+            hidden_states.shape[4],
+            device=hidden_states.device,
+            dtype=hidden_states.dtype,
+        )
+        return torch.cat([hidden_states, padding], dim=1)
 
     @staticmethod
     def _is_single_frame_batch(batch: DataLoaderBatchDTO) -> bool:
@@ -519,6 +623,7 @@ class Wan2214bI2VModel(Wan2214bModel):
         # images come in (bs, channels, height, width)
         is_single_frame_batch = self._is_single_frame_batch(batch)
         cached_condition_latents = getattr(batch, "i2v_condition_latents", None)
+        cached_first_frame_latents = getattr(batch, "first_frame_latents", None)
         should_use_degraded_image_conditioning = (
             is_single_frame_batch
             and not force_t2i_single_frame
@@ -537,14 +642,13 @@ class Wan2214bI2VModel(Wan2214bModel):
                 ],
                 dim=1,
             )
-        elif is_single_frame_batch and not should_use_degraded_image_conditioning:
-            target_in_channels = getattr(
-                getattr(self.model, "patch_embedding", None), "in_channels", None
+        elif cached_first_frame_latents is not None:
+            conditioned_latent = self._add_cached_first_frame_conditioning(
+                latent_model_input,
+                cached_first_frame_latents,
             )
-            if target_in_channels is None and hasattr(self.model, "config"):
-                target_in_channels = getattr(self.model.config, "in_channels", None)
-            if target_in_channels is None and hasattr(self.model, "patch_embedding"):
-                target_in_channels = self.model.patch_embedding.weight.shape[1]
+        elif is_single_frame_batch and not should_use_degraded_image_conditioning:
+            target_in_channels = self._get_target_in_channels()
 
             if target_in_channels is None or target_in_channels <= latent_model_input.shape[1]:
                 conditioned_latent = latent_model_input
@@ -583,6 +687,8 @@ class Wan2214bI2VModel(Wan2214bModel):
                     vae=self.vae
                 )
                 self._offload_vae_after_encode()
+
+        conditioned_latent = self._match_conditioning_channels(conditioned_latent)
 
         noise_pred = self.model(
             hidden_states=conditioned_latent,
