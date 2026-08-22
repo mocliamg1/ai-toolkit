@@ -304,6 +304,254 @@ class MinimaxH3Model(BaseModel):
             )
         return f"dit_{partition}"
 
+    @staticmethod
+    def _inspect_frozen_helper_state_dict(state_dict):
+        """Infer an ai-toolkit LoRA/LoKr network from MiniMax-H3 weights."""
+        lora_suffixes = (
+            ".lora_A.weight",
+            ".lora_B.weight",
+            ".lora_down.weight",
+            ".lora_up.weight",
+        )
+        lokr_suffixes = (
+            ".lokr_w1",
+            ".lokr_w2",
+            ".lokr_w2_a",
+            ".lokr_w2_b",
+            ".alpha",
+        )
+
+        lora_keys = [
+            key for key in state_dict if key.endswith(lora_suffixes)
+        ]
+        lokr_keys = [
+            key
+            for key in state_dict
+            if ".lokr_" in key or (
+                key.endswith(".alpha")
+                and key.rsplit(".alpha", 1)[0]
+                in {
+                    candidate.split(".lokr_", 1)[0]
+                    for candidate in state_dict
+                    if ".lokr_" in candidate
+                }
+            )
+        ]
+
+        if lora_keys and lokr_keys:
+            raise ValueError(
+                "MiniMax-H3 frozen helper cannot mix LoRA and LoKr tensors"
+            )
+        if not lora_keys and not lokr_keys:
+            raise ValueError(
+                "MiniMax-H3 model.lora_path must contain ai-toolkit LoRA or LoKr weights"
+            )
+
+        adapter_type = "lokr" if lokr_keys else "lora"
+        adapter_keys = lokr_keys if lokr_keys else lora_keys
+        unsupported_keys = [
+            key
+            for key in state_dict
+            if key not in adapter_keys
+        ]
+        if unsupported_keys:
+            raise ValueError(
+                "MiniMax-H3 frozen helper contains unsupported tensors: "
+                f"{unsupported_keys[:8]}"
+            )
+
+        module_groups = {}
+        for key in adapter_keys:
+            suffix = next(
+                (suffix for suffix in lora_suffixes + lokr_suffixes if key.endswith(suffix)),
+                None,
+            )
+            if suffix is None:
+                raise ValueError(f"Unsupported {adapter_type} tensor key: {key}")
+            module_name = key[: -len(suffix)]
+            if not module_name.startswith("transformer."):
+                raise ValueError(
+                    "MiniMax-H3 frozen helper keys must start with "
+                    f"'diffusion_model.' or 'transformer.': {key}"
+                )
+            module_groups.setdefault(module_name, {})[suffix] = state_dict[key]
+
+        if adapter_type == "lora":
+            ranks = set()
+            for module_name, tensors in module_groups.items():
+                down = tensors.get(".lora_A.weight", tensors.get(".lora_down.weight"))
+                up = tensors.get(".lora_B.weight", tensors.get(".lora_up.weight"))
+                if down is None or up is None:
+                    raise ValueError(
+                        f"Incomplete LoRA tensors for MiniMax-H3 module {module_name}"
+                    )
+                if down.ndim != 2 or up.ndim != 2 or down.shape[0] != up.shape[1]:
+                    raise ValueError(
+                        f"Incompatible LoRA tensor shapes for {module_name}: "
+                        f"down={tuple(down.shape)}, up={tuple(up.shape)}"
+                    )
+                ranks.add(int(down.shape[0]))
+            if len(ranks) != 1:
+                raise ValueError(
+                    f"MiniMax-H3 frozen LoRA must use one rank, found {sorted(ranks)}"
+                )
+            return {
+                "type": "lora",
+                "linear": ranks.pop(),
+                "module_names": sorted(module_groups),
+                "transformer_only": all(
+                    name.startswith("transformer.blocks.") for name in module_groups
+                ),
+            }
+
+        factors = set()
+        ranks = set()
+        alphas = set()
+        full_rank_modes = set()
+        for module_name, tensors in module_groups.items():
+            w1 = tensors.get(".lokr_w1")
+            if w1 is None or w1.ndim != 2:
+                raise ValueError(
+                    f"Unsupported AI Toolkit LoKr w1 layout for {module_name}"
+                )
+            factors.add(int(w1.shape[0]))
+
+            w2 = tensors.get(".lokr_w2")
+            w2_a = tensors.get(".lokr_w2_a")
+            w2_b = tensors.get(".lokr_w2_b")
+            if w2 is not None and w2_a is None and w2_b is None:
+                if w2.ndim != 2:
+                    raise ValueError(
+                        f"Unsupported full-rank LoKr w2 shape for {module_name}: {tuple(w2.shape)}"
+                    )
+                full_rank_modes.add(True)
+            elif w2 is None and w2_a is not None and w2_b is not None:
+                if w2_a.ndim != 2 or w2_b.ndim != 2 or w2_a.shape[1] != w2_b.shape[0]:
+                    raise ValueError(
+                        f"Incompatible factorized LoKr tensors for {module_name}: "
+                        f"w2_a={tuple(w2_a.shape)}, w2_b={tuple(w2_b.shape)}"
+                    )
+                full_rank_modes.add(False)
+                ranks.add(int(w2_a.shape[1]))
+            else:
+                raise ValueError(
+                    f"Incomplete or mixed LoKr w2 tensors for MiniMax-H3 module {module_name}"
+                )
+
+            alpha = tensors.get(".alpha")
+            if alpha is None:
+                raise ValueError(f"Missing LoKr alpha tensor for {module_name}")
+            if alpha.numel() != 1:
+                raise ValueError(f"LoKr alpha must be scalar for {module_name}")
+            alphas.add(float(alpha.item()))
+
+        if len(full_rank_modes) != 1:
+            raise ValueError("MiniMax-H3 frozen LoKr mixes full-rank and factorized modules")
+        full_rank = full_rank_modes.pop()
+        if not full_rank and len(ranks) != 1:
+            raise ValueError(
+                f"MiniMax-H3 frozen LoKr must use one rank, found {sorted(ranks)}"
+            )
+
+        linear = 1 if full_rank else ranks.pop()
+        # AI Toolkit forces full-rank LoKr to an intentionally huge alpha and
+        # later casts metadata tensors to the save dtype; bf16 rounds it and
+        # fp16 may represent it as inf. Its runtime scale is still exactly 1.
+        if not full_rank and alphas != {float(linear)}:
+            raise ValueError(
+                "MiniMax-H3 frozen LoKr uses unsupported alpha scaling: "
+                f"expected {linear}, found {sorted(alphas)}"
+            )
+
+        return {
+            "type": "lokr",
+            "linear": linear,
+            "lokr_full_rank": full_rank,
+            "lokr_factor": max(factors),
+            "module_names": sorted(module_groups),
+            "transformer_only": all(
+                name.startswith("transformer.blocks.") for name in module_groups
+            ),
+        }
+
+    def load_frozen_helper_adapter(self, transformer: MiniMaxH3Transformer):
+        """Fuse one ai-toolkit LoRA/LoKr into the loaded MiniMax-H3 DiT."""
+        from toolkit.config_modules import NetworkConfig
+        from toolkit.lora_special import LoRASpecialNetwork
+
+        helper_path = self.model_config.lora_path
+        if not os.path.isfile(helper_path):
+            raise FileNotFoundError(
+                f"MiniMax-H3 model.lora_path must be a local file: {helper_path}"
+            )
+        if os.path.splitext(helper_path)[1].lower() != ".safetensors":
+            raise ValueError(
+                "MiniMax-H3 model.lora_path must be an ai-toolkit .safetensors adapter"
+            )
+
+        raw_state_dict = load_file(helper_path)
+        normalized_state_dict = self.convert_lora_weights_before_load(raw_state_dict)
+        helper_info = self._inspect_frozen_helper_state_dict(normalized_state_dict)
+
+        network_config = NetworkConfig(
+            **{
+                "type": helper_info["type"],
+                "linear": helper_info["linear"],
+                "linear_alpha": helper_info["linear"],
+                "transformer_only": helper_info["transformer_only"],
+                "lokr_full_rank": helper_info.get("lokr_full_rank", True),
+                "lokr_factor": helper_info.get("lokr_factor", -1),
+            }
+        )
+        network = LoRASpecialNetwork(
+            text_encoder=None,
+            unet=transformer,
+            lora_dim=network_config.linear,
+            multiplier=1.0,
+            alpha=network_config.linear_alpha,
+            train_unet=True,
+            train_text_encoder=False,
+            network_config=network_config,
+            network_type=network_config.type,
+            transformer_only=network_config.transformer_only,
+            is_transformer=True,
+            target_lin_modules=self.target_lora_modules,
+            only_if_contains=helper_info["module_names"],
+            base_model=self,
+        )
+
+        # LoRANetwork.apply_to() normally both registers these modules and
+        # patches the model forwards. Frozen helpers need registration for
+        # strict state-dict loading, but must never install live wrappers.
+        for helper_module in network.get_all_modules():
+            network.add_module(helper_module.lora_name, helper_module)
+
+        module_count = len(network.get_all_modules())
+        expected_count = len(helper_info["module_names"])
+        if module_count != expected_count:
+            raise ValueError(
+                "MiniMax-H3 frozen helper module mismatch: "
+                f"checkpoint has {expected_count}, model matched {module_count}"
+            )
+
+        extra_weights = network.load_weights(raw_state_dict, strict=True)
+        if extra_weights:
+            raise ValueError(
+                "MiniMax-H3 frozen helper contains unmatched weights: "
+                f"{list(extra_weights)[:8]}"
+            )
+
+        # The temporary network is never applied to model forwards. Its modules
+        # only reconstruct and merge their deltas, so it cannot leak into the
+        # optimizer, validation toggles, or the newly saved training adapter.
+        network.merge_in(merge_weight=1.0)
+        self.print_and_status_update(
+            f"Fused frozen helper {helper_info['type'].upper()} from "
+            f"{helper_path} into {module_count} modules"
+        )
+        del network, raw_state_dict, normalized_state_dict
+        flush()
+
     def load_training_adapter(self, transformer: MiniMaxH3Transformer):
         """Load an assistant LoRA (e.g. a de-distillation adapter) as a LIVE
         module: active during training, deactivated by the sampler. It is
@@ -592,7 +840,12 @@ class MinimaxH3Model(BaseModel):
 
         transformer = self._load_transformer()
 
-        # load assistant lora if specified (merged into the quantized weights)
+        # A concept helper is permanently fused before live training adapters,
+        # additional quantization, offloading, and the new trainable network.
+        if self.model_config.lora_path is not None:
+            self.load_frozen_helper_adapter(transformer)
+
+        # load assistant lora if specified (kept live and toggled for sampling)
         if self.model_config.assistant_lora_path is not None:
             self.load_training_adapter(transformer)
 

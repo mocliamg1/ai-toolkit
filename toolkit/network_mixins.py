@@ -665,7 +665,7 @@ class ToolkitNetworkMixin:
         else:
             torch.save(save_dict, file)
 
-    def load_weights(self: Network, file, force_weight_mapping=False):
+    def load_weights(self: Network, file, force_weight_mapping=False, strict=False):
         # allows us to save and load to and from ldm weights
         keymap = self.get_keymap(force_weight_mapping)
         keymap = {} if keymap is None else keymap
@@ -778,12 +778,31 @@ class ToolkitNetworkMixin:
             del load_sd[key]
 
         print(f"Missing keys: {to_delete}")
+        if strict and len(to_delete) > 0:
+            raise ValueError(
+                "Adapter contains keys that do not match the target network: "
+                f"{to_delete[:8]}"
+            )
         if len(to_delete) > 0 and self.is_v1 and not force_weight_mapping and not (
                 len(to_delete) == 1 and 'emb_params' in to_delete):
             print(" Attempting to load with forced keymap")
-            return self.load_weights(file, force_weight_mapping=True)
+            return self.load_weights(file, force_weight_mapping=True, strict=strict)
 
         info = self.load_state_dict(load_sd, False)
+        if strict:
+            missing_keys = list(info.missing_keys)
+            # PEFT-format LoRA checkpoints intentionally omit alpha. LoKr keeps
+            # alpha because it is part of the adapter's reconstruction.
+            if self.peft_format and self.network_type.lower() != "lokr":
+                missing_keys = [
+                    key for key in missing_keys if not key.endswith(".alpha")
+                ]
+            if missing_keys or info.unexpected_keys:
+                raise ValueError(
+                    "Adapter does not exactly match the target network: "
+                    f"missing={missing_keys[:8]}, "
+                    f"unexpected={list(info.unexpected_keys)[:8]}"
+                )
         if len(extra_dict.keys()) == 0:
             extra_dict = None
         return extra_dict
