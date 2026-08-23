@@ -296,6 +296,32 @@ export default function SimpleJob({
               placeholder=""
               required
             />
+            {modelArch?.additionalSections?.includes('model.lora_path') && (
+              <>
+                <TextInput
+                  label="Frozen Helper Adapter Path"
+                  value={jobConfig.config.process[0].model.lora_path ?? ''}
+                  docKey="model.lora_path"
+                  onChange={(value: string | undefined) => {
+                    if (value?.trim() === '') {
+                      value = undefined;
+                    }
+                    setJobConfig(value, 'config.process[0].model.lora_path');
+                  }}
+                  placeholder="/path/to/helper.safetensors"
+                />
+                {jobConfig.config.process[0].model.lora_path && (
+                  <NumberInput
+                    label="Frozen Helper Strength"
+                    value={jobConfig.config.process[0].model.lora_strength ?? 1.0}
+                    docKey="model.lora_strength"
+                    onChange={value => setJobConfig(value ?? 1.0, 'config.process[0].model.lora_strength')}
+                    placeholder="1.0"
+                    required
+                  />
+                )}
+              </>
+            )}
             {modelArch?.additionalSections?.includes('model.assistant_lora_path') && (
               <TextInput
                 label="Training Adapter Path"

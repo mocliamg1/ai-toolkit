@@ -33,6 +33,7 @@ type AdditionalSections =
   | 'model.layer_offloading'
   | 'model.low_vram'
   | 'model.qie.match_target_res'
+  | 'model.lora_path'
   | 'model.assistant_lora_path'
   | 'model.unconditional_lora_path'
   | 'model.model_kwargs.kv_cache'
@@ -738,6 +739,8 @@ export const modelArchs: ModelArch[] = [
       'config.process[0].model.quantize_te': [true, false],
       'config.process[0].model.qtype_te': ['nvfp4', 'qfloat8'],
       'config.process[0].model.low_vram': [true, false],
+      'config.process[0].model.lora_path': [undefined, undefined],
+      'config.process[0].model.lora_strength': [1.0, undefined],
       'config.process[0].sample.sampler': ['flowmatch', 'flowmatch'],
       'config.process[0].train.noise_scheduler': ['flowmatch', 'flowmatch'],
       'config.process[0].train.cache_text_embeddings': [true, false],
@@ -777,6 +780,7 @@ export const modelArchs: ModelArch[] = [
       'datasets.do_i2v',
       'train.audio_loss_multiplier',
       'datasets.auto_frame_count',
+      'model.lora_path',
       'model.assistant_lora_path',
     ],
     customModelSelectOptions: [
@@ -887,6 +891,8 @@ export const modelArchs: ModelArch[] = [
       'config.process[0].model.quantize_te': [true, false],
       'config.process[0].model.qtype_te': ['nvfp4', 'qfloat8'],
       'config.process[0].model.low_vram': [true, false],
+      'config.process[0].model.lora_path': [undefined, undefined],
+      'config.process[0].model.lora_strength': [1.0, undefined],
       'config.process[0].sample.sampler': ['flowmatch', 'flowmatch'],
       'config.process[0].train.noise_scheduler': ['flowmatch', 'flowmatch'],
       'config.process[0].train.cache_text_embeddings': [true, false],
@@ -925,6 +931,7 @@ export const modelArchs: ModelArch[] = [
       'datasets.audio_preserve_pitch',
       'train.audio_loss_multiplier',
       'datasets.auto_frame_count',
+      'model.lora_path',
       'model.assistant_lora_path',
     ],
     customModelSelectOptions: [
@@ -1009,12 +1016,12 @@ export const modelArchs: ModelArch[] = [
           description: (
             <div className="space-y-2">
               <p>
-                How still-image references (dataset control images and sample ctrl images) are shown to the model.
-                Video references always use the video path.
+                How still-image references (dataset control images and sample ctrl images) are shown to the model. Video
+                references always use the video path.
               </p>
               <p>
-                <strong>Picture</strong>: the native ref2va recipe — a single-frame reference block, shown to Qwen3-VL as
-                a <code>&lt;Picture i&gt;</code> block, scaled down only.
+                <strong>Picture</strong>: the native ref2va recipe — a single-frame reference block, shown to Qwen3-VL
+                as a <code>&lt;Picture i&gt;</code> block, scaled down only.
               </p>
               <p>
                 <strong>Static video clip</strong>: the image is held for 5 frames (2 latent frames) and routed through
@@ -1035,10 +1042,10 @@ export const modelArchs: ModelArch[] = [
           Reference-to-video: control images and videos condition the output as subject/style references (never as a
           first frame). References keep their own aspect and are matched to the target's pixel area (images scale down
           only, never up; a same-aspect video reference is exactly the target size). Each rides into the packed sequence
-          as a reference block, and is also shown to the Qwen3-VL conditioner as a <code>&lt;Picture i&gt;</code> (image)
-          or timestamped <code>&lt;Video k&gt;</code> (video) vision block. Training references come from the dataset
-          control path(s); sampling uses the sample ctrl images — always as references. The Image Reference Presentation
-          option can route still images through the video-reference path as short static clips.
+          as a reference block, and is also shown to the Qwen3-VL conditioner as a <code>&lt;Picture i&gt;</code>{' '}
+          (image) or timestamped <code>&lt;Video k&gt;</code> (video) vision block. Training references come from the
+          dataset control path(s); sampling uses the sample ctrl images — always as references. The Image Reference
+          Presentation option can route still images through the video-reference path as short static clips.
         </p>
         <p>
           Weights load like MiniMax-H3 (see that arch's notes) from the{' '}

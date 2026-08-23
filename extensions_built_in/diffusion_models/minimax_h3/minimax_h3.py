@@ -36,6 +36,7 @@ Conventions bridged to ai-toolkit:
     training and sampling alike
 """
 
+import math
 import os
 from functools import partial
 from typing import TYPE_CHECKING, List, Optional
@@ -480,6 +481,18 @@ class MinimaxH3Model(BaseModel):
         from toolkit.lora_special import LoRASpecialNetwork
 
         helper_path = self.model_config.lora_path
+        try:
+            helper_strength = float(
+                getattr(self.model_config, "lora_strength", 1.0)
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "MiniMax-H3 model.lora_strength must be a finite number"
+            ) from exc
+        if not math.isfinite(helper_strength):
+            raise ValueError(
+                "MiniMax-H3 model.lora_strength must be a finite number"
+            )
         if not os.path.isfile(helper_path):
             raise FileNotFoundError(
                 f"MiniMax-H3 model.lora_path must be a local file: {helper_path}"
@@ -507,6 +520,8 @@ class MinimaxH3Model(BaseModel):
             text_encoder=None,
             unet=transformer,
             lora_dim=network_config.linear,
+            # The temporary network is never applied to a forward pass; the
+            # configured helper strength is applied exactly once by merge_in.
             multiplier=1.0,
             alpha=network_config.linear_alpha,
             train_unet=True,
@@ -544,11 +559,21 @@ class MinimaxH3Model(BaseModel):
         # The temporary network is never applied to model forwards. Its modules
         # only reconstruct and merge their deltas, so it cannot leak into the
         # optimizer, validation toggles, or the newly saved training adapter.
-        network.merge_in(merge_weight=1.0)
-        self.print_and_status_update(
-            f"Fused frozen helper {helper_info['type'].upper()} from "
-            f"{helper_path} into {module_count} modules"
-        )
+        if helper_strength == 0.0:
+            # Avoid a no-op dequantize/requantize cycle, which is lossy for an
+            # already quantized transformer even though the delta is zero.
+            self.print_and_status_update(
+                f"Loaded frozen helper {helper_info['type'].upper()} from "
+                f"{helper_path} at strength 0; merge skipped for "
+                f"{module_count} modules"
+            )
+        else:
+            network.merge_in(merge_weight=helper_strength)
+            self.print_and_status_update(
+                f"Fused frozen helper {helper_info['type'].upper()} from "
+                f"{helper_path} at strength {helper_strength:g} into "
+                f"{module_count} modules"
+            )
         del network, raw_state_dict, normalized_state_dict
         flush()
 

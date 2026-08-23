@@ -209,6 +209,8 @@ export interface ModelConfig {
   layer_offloading?: boolean;
   layer_offloading_transformer_percent?: number;
   layer_offloading_text_encoder_percent?: number;
+  lora_path?: string;
+  lora_strength?: number;
   assistant_lora_path?: string;
   unconditional_lora_path?: string;
   compile?: boolean;
@@ -325,7 +327,7 @@ export interface CaptionProcessConfig {
     batch_size?: number;
     layer_offloading?: boolean;
     layer_offloading_percent?: number;
-  }
+  };
 }
 
 export interface CaptionConfigObject {

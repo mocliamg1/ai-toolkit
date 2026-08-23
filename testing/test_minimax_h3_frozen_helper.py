@@ -89,9 +89,13 @@ class MinimaxH3FrozenHelperTest(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def _model(self, helper_path):
+    def _model(self, helper_path, strength=1.0):
         model = object.__new__(MinimaxH3Model)
-        model.model_config = SimpleNamespace(lora_path=helper_path, qtype=None)
+        model.model_config = SimpleNamespace(
+            lora_path=helper_path,
+            lora_strength=strength,
+            qtype=None,
+        )
         model.target_lora_modules = ["MiniMaxH3Transformer"]
         model.device_torch = torch.device("cpu")
         model.torch_dtype = torch.float32
@@ -145,6 +149,97 @@ class MinimaxH3FrozenHelperTest(unittest.TestCase):
             transformer.blocks[0].proj.weight,
             original + torch.kron(w1, w2),
         )
+
+    def test_scales_lora_helper_merge_strength(self):
+        transformer = MiniMaxH3Transformer()
+        original = transformer.blocks[0].proj.weight.detach().clone()
+        down = torch.randn(2, 8)
+        up = torch.randn(8, 2)
+        path = self._save(
+            "scaled_helper_lora.safetensors",
+            {
+                "diffusion_model.blocks.0.proj.lora_A.weight": down,
+                "diffusion_model.blocks.0.proj.lora_B.weight": up,
+            },
+        )
+        statuses = []
+        model = self._model(path, strength=0.35)
+        model._status_update_hooks.append(statuses.append)
+
+        model.load_frozen_helper_adapter(transformer)
+
+        torch.testing.assert_close(
+            transformer.blocks[0].proj.weight,
+            original + 0.35 * (up @ down),
+        )
+        self.assertIn("at strength 0.35", statuses[-1])
+
+    def test_scales_lokr_helper_merge_strength(self):
+        transformer = MiniMaxH3Transformer()
+        original = transformer.blocks[0].proj.weight.detach().clone()
+        w1 = torch.randn(2, 2)
+        w2 = torch.randn(4, 4)
+        path = self._save(
+            "scaled_helper_lokr.safetensors",
+            {
+                "diffusion_model.blocks.0.proj.lokr_w1": w1,
+                "diffusion_model.blocks.0.proj.lokr_w2": w2,
+                "diffusion_model.blocks.0.proj.alpha": torch.tensor(float("inf")),
+            },
+        )
+
+        self._model(path, strength=-0.5).load_frozen_helper_adapter(transformer)
+
+        torch.testing.assert_close(
+            transformer.blocks[0].proj.weight,
+            original - 0.5 * torch.kron(w1, w2),
+        )
+
+    def test_rejects_non_finite_helper_merge_strength(self):
+        transformer = MiniMaxH3Transformer()
+        path = self._save(
+            "helper_lora.safetensors",
+            {
+                "diffusion_model.blocks.0.proj.lora_A.weight": torch.randn(2, 8),
+                "diffusion_model.blocks.0.proj.lora_B.weight": torch.randn(8, 2),
+            },
+        )
+
+        for strength in (float("nan"), float("inf"), "not-a-number"):
+            with self.subTest(strength=strength), self.assertRaisesRegex(
+                ValueError, "lora_strength must be a finite number"
+            ):
+                self._model(path, strength=strength).load_frozen_helper_adapter(
+                    transformer
+                )
+
+    def test_zero_strength_does_not_touch_quantized_base(self):
+        from toolkit.util.ostris_quant import (
+            convert_linear_to_ostris,
+            get_ostris_quantizer,
+        )
+
+        transformer = MiniMaxH3Transformer(dim=32)
+        proj = transformer.blocks[0].proj
+        self.assertTrue(
+            convert_linear_to_ostris(proj, get_ostris_quantizer("convrot8"))
+        )
+        original = proj.weight.detach().clone()
+        path = self._save(
+            "zero_strength_helper.safetensors",
+            {
+                "diffusion_model.blocks.0.proj.lora_A.weight": torch.randn(2, 32),
+                "diffusion_model.blocks.0.proj.lora_B.weight": torch.randn(32, 2),
+            },
+        )
+        statuses = []
+        model = self._model(path, strength=0)
+        model._status_update_hooks.append(statuses.append)
+
+        model.load_frozen_helper_adapter(transformer)
+
+        torch.testing.assert_close(transformer.blocks[0].proj.weight, original)
+        self.assertIn("merge skipped", statuses[-1])
 
     def test_fuses_factorized_ai_toolkit_lokr(self):
         transformer = MiniMaxH3Transformer()
