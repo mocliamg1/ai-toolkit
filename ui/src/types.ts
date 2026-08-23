@@ -211,6 +211,8 @@ export interface ModelConfig {
   layer_offloading_text_encoder_percent?: number;
   lora_path?: string;
   lora_strength?: number;
+  flow_shift?: number;
+  audio_flow_shift?: number;
   assistant_lora_path?: string;
   unconditional_lora_path?: string;
   compile?: boolean;

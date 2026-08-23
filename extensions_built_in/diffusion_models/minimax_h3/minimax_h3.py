@@ -103,6 +103,22 @@ scheduler_config = {
     "use_dynamic_shifting": False,
 }
 
+
+def _resolve_flow_shift(value, default: float, config_name: str) -> float:
+    if value is None:
+        value = default
+    try:
+        shift = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"MiniMax-H3 model.{config_name} must be a finite number greater than 0"
+        ) from exc
+    if not math.isfinite(shift) or shift <= 0:
+        raise ValueError(
+            f"MiniMax-H3 model.{config_name} must be a finite number greater than 0"
+        )
+    return shift
+
 # Comfy-Org repack of the released weights, at ComfyUI's repo-relative paths
 # under MODELS_PATH (diffusion_models/, text_encoders/, vae/). Files are used
 # in place when present and downloaded to exactly these locations only when
@@ -204,10 +220,40 @@ class MinimaxH3Model(BaseModel):
         self.max_text_length = int(
             self.model_config.model_kwargs.get("max_text_length", 512)
         )
+        self.flow_shift = _resolve_flow_shift(
+            getattr(self.model_config, "flow_shift", None),
+            packing.VIDEO_SIGMA_SHIFT,
+            "flow_shift",
+        )
+        self.audio_flow_shift = _resolve_flow_shift(
+            getattr(self.model_config, "audio_flow_shift", None),
+            packing.AUDIO_SIGMA_SHIFT,
+            "audio_flow_shift",
+        )
 
     @staticmethod
-    def get_train_scheduler():
-        return CustomFlowMatchEulerDiscreteScheduler(**scheduler_config)
+    def get_train_scheduler(flow_shift: float = packing.VIDEO_SIGMA_SHIFT):
+        flow_shift = _resolve_flow_shift(
+            flow_shift, packing.VIDEO_SIGMA_SHIFT, "flow_shift"
+        )
+        return CustomFlowMatchEulerDiscreteScheduler(
+            **{**scheduler_config, "shift": flow_shift}
+        )
+
+    def remap_audio_sigma(self, video_sigma):
+        return remap_sigma(
+            video_sigma,
+            from_shift=self.flow_shift,
+            to_shift=self.audio_flow_shift,
+        )
+
+    def build_sigma_schedules(self, num_steps: int, device=None):
+        video_sigmas = packing.build_sigma_schedule(num_steps, self.flow_shift)
+        audio_sigmas = self.remap_audio_sigma(video_sigmas)
+        if device is not None:
+            video_sigmas = video_sigmas.to(device)
+            audio_sigmas = audio_sigmas.to(device)
+        return video_sigmas, audio_sigmas
 
     def get_bucket_divisibility(self):
         # 16x VAE spatial compression * 2x2 transformer patch
@@ -862,6 +908,10 @@ class MinimaxH3Model(BaseModel):
     def load_model(self):
         dtype = self.torch_dtype
         self.print_and_status_update("Loading MiniMax-H3 model")
+        self.print_and_status_update(
+            f"MiniMax-H3 flow shifts: video={self.flow_shift:g}, "
+            f"audio={self.audio_flow_shift:g}"
+        )
 
         transformer = self._load_transformer()
 
@@ -927,7 +977,7 @@ class MinimaxH3Model(BaseModel):
         vae_bundle = self._load_vaes()
         vae_bundle.to(self.vae_device_torch)
 
-        self.noise_scheduler = MinimaxH3Model.get_train_scheduler()
+        self.noise_scheduler = MinimaxH3Model.get_train_scheduler(self.flow_shift)
         self.vae = vae_bundle
         self.text_encoder = text_encoder
         self.tokenizer = tokenizer
@@ -1211,7 +1261,7 @@ class MinimaxH3Model(BaseModel):
                 sigma_v = sigma_v.unsqueeze(0)
             if sigma_v.shape[0] != batch_size:
                 sigma_v = sigma_v.expand(batch_size)
-            sigma_a = remap_sigma(sigma_v)
+            sigma_a = self.remap_audio_sigma(sigma_v)
             t_v = 1.0 - sigma_v
             t_a = 1.0 - sigma_a
 

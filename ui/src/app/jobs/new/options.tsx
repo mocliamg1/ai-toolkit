@@ -34,6 +34,7 @@ type AdditionalSections =
   | 'model.low_vram'
   | 'model.qie.match_target_res'
   | 'model.lora_path'
+  | 'model.flow_shifts'
   | 'model.assistant_lora_path'
   | 'model.unconditional_lora_path'
   | 'model.model_kwargs.kv_cache'
@@ -741,6 +742,8 @@ export const modelArchs: ModelArch[] = [
       'config.process[0].model.low_vram': [true, false],
       'config.process[0].model.lora_path': [undefined, undefined],
       'config.process[0].model.lora_strength': [1.0, undefined],
+      'config.process[0].model.flow_shift': [12.0, undefined],
+      'config.process[0].model.audio_flow_shift': [3.0, undefined],
       'config.process[0].sample.sampler': ['flowmatch', 'flowmatch'],
       'config.process[0].train.noise_scheduler': ['flowmatch', 'flowmatch'],
       'config.process[0].train.cache_text_embeddings': [true, false],
@@ -781,6 +784,7 @@ export const modelArchs: ModelArch[] = [
       'train.audio_loss_multiplier',
       'datasets.auto_frame_count',
       'model.lora_path',
+      'model.flow_shifts',
       'model.assistant_lora_path',
     ],
     customModelSelectOptions: [
@@ -893,6 +897,8 @@ export const modelArchs: ModelArch[] = [
       'config.process[0].model.low_vram': [true, false],
       'config.process[0].model.lora_path': [undefined, undefined],
       'config.process[0].model.lora_strength': [1.0, undefined],
+      'config.process[0].model.flow_shift': [12.0, undefined],
+      'config.process[0].model.audio_flow_shift': [3.0, undefined],
       'config.process[0].sample.sampler': ['flowmatch', 'flowmatch'],
       'config.process[0].train.noise_scheduler': ['flowmatch', 'flowmatch'],
       'config.process[0].train.cache_text_embeddings': [true, false],
@@ -932,6 +938,7 @@ export const modelArchs: ModelArch[] = [
       'train.audio_loss_multiplier',
       'datasets.auto_frame_count',
       'model.lora_path',
+      'model.flow_shifts',
       'model.assistant_lora_path',
     ],
     customModelSelectOptions: [

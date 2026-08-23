@@ -29,16 +29,12 @@ from . import packing
 from .text_encoder import trim_caption_tokens
 from .packing import (
     AUDIO_CHANNELS,
-    AUDIO_SIGMA_SHIFT,
     FPS,
     KEYFRAME_NOISE_AUG_T,
-    VIDEO_SIGMA_SHIFT,
     build_packed_sequence,
     build_row_timesteps,
-    build_sigma_schedule,
     pack_audio_latents,
     patchify_video_latents,
-    remap_sigma,
     unpack_audio_tokens,
     unpatchify_video_tokens,
 )
@@ -200,12 +196,11 @@ class MiniMaxH3Pipeline:
         audio_rows = pack_audio_latents(audio_noise)  # (1, 2*A, 32)
 
         # --- schedules -----------------------------------------------------
-        sigmas_v = build_sigma_schedule(num_inference_steps, VIDEO_SIGMA_SHIFT).to(
-            device
+        # Both modalities derive their sigma from the same underlying grid,
+        # but use independent configurable shifts (released defaults: 12 / 3).
+        sigmas_v, sigmas_a = model.build_sigma_schedules(
+            num_inference_steps, device=device
         )
-        # the audio schedule follows the video grid through the closed-form
-        # shift remap so both streams sit at the same underlying position
-        sigmas_a = remap_sigma(sigmas_v, VIDEO_SIGMA_SHIFT, AUDIO_SIGMA_SHIFT)
 
         position_ids = layout.position_ids[None].to(device)
         tags = layout.token_tags[None].to(device)

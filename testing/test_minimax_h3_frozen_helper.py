@@ -67,6 +67,8 @@ finally:
             sys.modules[_module_name] = _saved_module
 
 MinimaxH3Model = _minimax_module.MinimaxH3Model
+_resolve_flow_shift = _minimax_module._resolve_flow_shift
+packing = _minimax_module.packing
 
 
 class _Block(torch.nn.Module):
@@ -106,6 +108,36 @@ class MinimaxH3FrozenHelperTest(unittest.TestCase):
         path = os.path.join(self.temp_dir.name, name)
         save_file(state_dict, path)
         return path
+
+    def test_custom_flow_shifts_keep_video_and_audio_on_same_base_position(self):
+        model = object.__new__(MinimaxH3Model)
+        model.flow_shift = 7.5
+        model.audio_flow_shift = 2.25
+
+        video_sigmas, audio_sigmas = model.build_sigma_schedules(20)
+        base = torch.linspace(1.0, 0.0, 21, dtype=torch.float32)
+
+        torch.testing.assert_close(video_sigmas, packing.shift_sigma(base, 7.5))
+        torch.testing.assert_close(audio_sigmas, packing.shift_sigma(base, 2.25))
+        scheduler = MinimaxH3Model.get_train_scheduler(7.5)
+        self.assertEqual(float(scheduler.config.shift), 7.5)
+        scheduler.set_train_timesteps(50, torch.device("cpu"), timestep_type="shift")
+        train_video_sigmas = scheduler.timesteps / 1000.0
+        base_positions = train_video_sigmas / (
+            7.5 + train_video_sigmas * (1.0 - 7.5)
+        )
+        torch.testing.assert_close(
+            model.remap_audio_sigma(train_video_sigmas),
+            packing.shift_sigma(base_positions, 2.25),
+        )
+
+    def test_flow_shifts_require_positive_finite_numbers(self):
+        self.assertEqual(_resolve_flow_shift(None, 12.0, "flow_shift"), 12.0)
+        for value in (0, -1, float("nan"), float("inf"), "bad"):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError, "must be a finite number greater than 0"
+            ):
+                _resolve_flow_shift(value, 12.0, "flow_shift")
 
     def test_fuses_ai_toolkit_lora_without_installing_a_live_wrapper(self):
         transformer = MiniMaxH3Transformer()
@@ -385,6 +417,8 @@ class MinimaxH3FrozenHelperTest(unittest.TestCase):
             layer_offloading_text_encoder_percent=0,
             low_vram=False,
         )
+        model.flow_shift = 12.0
+        model.audio_flow_shift = 3.0
         model.torch_dtype = torch.float32
         model.device_torch = torch.device("cpu")
         model.vae_device_torch = torch.device("cpu")

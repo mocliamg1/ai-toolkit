@@ -322,6 +322,26 @@ export default function SimpleJob({
                 )}
               </>
             )}
+            {modelArch?.additionalSections?.includes('model.flow_shifts') && (
+              <div className="grid grid-cols-2 gap-4">
+                <NumberInput
+                  label="Video Flow Shift"
+                  value={jobConfig.config.process[0].model.flow_shift ?? 12.0}
+                  docKey="model.flow_shift"
+                  onChange={value => setJobConfig(value ?? 12.0, 'config.process[0].model.flow_shift')}
+                  min={0.01}
+                  required
+                />
+                <NumberInput
+                  label="Audio Flow Shift"
+                  value={jobConfig.config.process[0].model.audio_flow_shift ?? 3.0}
+                  docKey="model.audio_flow_shift"
+                  onChange={value => setJobConfig(value ?? 3.0, 'config.process[0].model.audio_flow_shift')}
+                  min={0.01}
+                  required
+                />
+              </div>
+            )}
             {modelArch?.additionalSections?.includes('model.assistant_lora_path') && (
               <TextInput
                 label="Training Adapter Path"
