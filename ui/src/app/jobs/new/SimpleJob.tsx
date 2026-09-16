@@ -327,6 +327,26 @@ export default function SimpleJob({
                 placeholder=""
               />
             )}
+            {modelArch?.additionalSections?.includes('model.helper_lora') && (
+              <>
+                <TextInput
+                  label="Permanent Helper LoRA Path"
+                  value={jobConfig.config.process[0].model.helper_lora_path ?? ''}
+                  onChange={(value: string | undefined) => {
+                    if (value?.trim() === '') {
+                      value = undefined;
+                    }
+                    setJobConfig(value, 'config.process[0].model.helper_lora_path');
+                  }}
+                  placeholder="Local path or org/repo/file.safetensors"
+                />
+                <NumberInput
+                  label="Helper LoRA Strength"
+                  value={jobConfig.config.process[0].model.helper_lora_strength ?? 1.0}
+                  onChange={value => setJobConfig(value, 'config.process[0].model.helper_lora_strength')}
+                />
+              </>
+            )}
             {modelArch?.additionalSections?.includes('model.unconditional_lora_path') && (
               <TextInput
                 label="Unconditional Adapter Path"

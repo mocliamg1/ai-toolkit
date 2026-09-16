@@ -399,6 +399,16 @@ class BaseSDTrainProcess(BaseTrainProcess):
         # )
         o_dict['ss_output_name'] = self.job.name
 
+        # A helper LoRA is part of the effective training base but is not
+        # included in a normal LoRA save. Record the dependency so downstream
+        # consumers can reconstruct the same base at inference time.
+        if (
+            self.model_config.helper_lora_path
+            and self.model_config.helper_lora_strength != 0.0
+        ):
+            o_dict['aitk_helper_lora_path'] = self.model_config.helper_lora_path_original
+            o_dict['aitk_helper_lora_strength'] = self.model_config.helper_lora_strength
+
         if self.trigger_word is not None:
             # just so auto1111 will pick it up
             o_dict['ss_tag_frequency'] = {

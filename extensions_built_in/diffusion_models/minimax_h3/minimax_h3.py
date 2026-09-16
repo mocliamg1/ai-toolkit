@@ -36,6 +36,7 @@ Conventions bridged to ai-toolkit:
     training and sampling alike
 """
 
+import math
 import os
 from functools import partial
 from typing import TYPE_CHECKING, List, Optional
@@ -130,6 +131,7 @@ FASTH3_REPO = "Kijai/MiniMax-H3-experimental"
 FASTH3_SOURCE_REPO = "FastVideo/FastVideo-Minimax-FastH3-Preview-v0.2"
 # tokenizer/processor/text-encoder config come from the original repo (tiny files)
 ORIGINAL_REPO = "MiniMaxAI/MiniMax-H3"
+HELPER_LORA_MERGE_SEED = 0
 
 
 def new_save_image_function(
@@ -273,6 +275,147 @@ class MinimaxH3Model(BaseModel):
             )
         return f"dit_{partition}"
 
+    def _resolve_adapter_path(self, adapter_path: str, adapter_kind: str) -> str:
+        """Resolve a MiniMax adapter from a local path, MODELS_PATH/loras, or
+        an ``org/repo/path.safetensors`` Hub reference.
+
+        Both permanent helper LoRAs and toggleable training adapters use this
+        path policy so a configuration behaves the same whichever role the
+        adapter has.
+        """
+        adapter_path = os.path.expanduser(str(adapter_path).strip())
+        if not adapter_path:
+            raise ValueError(f"{adapter_kind} LoRA path must not be empty")
+        if os.path.isfile(adapter_path):
+            return os.path.realpath(adapter_path)
+        if os.path.exists(adapter_path):
+            raise ValueError(
+                f"{adapter_kind} LoRA path is not a file: {adapter_path}"
+            )
+
+        filename = os.path.basename(adapter_path)
+        found = find_file_recursive(os.path.join(MODELS_PATH, "loras"), filename)
+        if found is not None:
+            return os.path.realpath(found)
+
+        parts = adapter_path.split("/")
+        if len(parts) < 3 or not all(parts[:2]) or not filename:
+            raise ValueError(
+                f"{adapter_kind} LoRA path {adapter_path} is not a local file, "
+                f"a file under {os.path.join(MODELS_PATH, 'loras')}, or an "
+                "'org/repo/path.safetensors' Hub path."
+            )
+
+        import huggingface_hub
+
+        subdir = "helper_adapters" if adapter_kind == "Helper" else "training_adapters"
+        target_dir = os.path.join(MODELS_PATH, "loras", subdir)
+        os.makedirs(target_dir, exist_ok=True)
+        try:
+            resolved = huggingface_hub.hf_hub_download(
+                repo_id="/".join(parts[:2]),
+                filename="/".join(parts[2:]),
+                local_dir=target_dir,
+            )
+        except Exception as e:
+            raise ValueError(
+                f"Failed to download {adapter_kind.lower()} LoRA from "
+                f"{adapter_path}: {e}"
+            ) from e
+        return os.path.realpath(resolved)
+
+    def _resolve_helper_lora(self):
+        """Return ``(path, strength, identity)`` or ``(None, 0, None)``.
+
+        Strength zero is an explicit disable switch and deliberately avoids
+        path resolution/downloads.
+        """
+        path = self.model_config.helper_lora_path
+        strength = float(self.model_config.helper_lora_strength)
+        if not math.isfinite(strength):
+            raise ValueError("helper_lora_strength must be a finite number")
+        if path is None or not str(path).strip() or strength == 0.0:
+            return None, 0.0, None
+        path = self._resolve_adapter_path(path, "Helper")
+        self.model_config.helper_lora_path = path
+        identity = f"{path}@{strength:.17g}"
+        return path, strength, identity
+
+    @staticmethod
+    def _evict_incompatible_helper_transformers(helper_identity):
+        """Prevent a helper-mutated transformer from crossing pool identities."""
+        from toolkit.models.v2.pool import ComponentPool
+
+        pool = ComponentPool.current
+        if pool is None:
+            return 0
+        return pool.evict_where(
+            lambda module: isinstance(module, MiniMaxH3Transformer)
+            and getattr(module, "_aitk_helper_lora", None) != helper_identity
+        )
+
+    def _merge_helper_lora(
+        self,
+        transformer: MiniMaxH3Transformer,
+        helper_path: str,
+        helper_strength: float,
+        helper_identity: str,
+    ):
+        """Permanently merge the helper into this in-memory transformer."""
+        from toolkit.inference_lora import InferenceLoRA
+
+        if getattr(transformer, "_aitk_helper_lora", None) == helper_identity:
+            self.print_and_status_update("Reusing transformer with helper LoRA merged")
+            return
+
+        self.print_and_status_update(
+            f"Merging helper LoRA at strength {helper_strength:g}"
+        )
+        # InferenceLoRA discovers its DiT through holder.model. Assigning the
+        # freshly loaded transformer here also makes the holder state truthful
+        # during the rest of the load sequence.
+        self.model = transformer
+        helper = InferenceLoRA(helper_path, strength=helper_strength).load(self)
+        if not helper.entries:
+            raise ValueError(
+                f"Helper LoRA {helper_path} matched no MiniMax-H3 transformer modules "
+                f"(unmatched: {helper.unmatched[:3]})"
+            )
+        if helper.unmatched:
+            preview = ", ".join(helper.unmatched[:3])
+            suffix = " ..." if len(helper.unmatched) > 3 else ""
+            self.print_and_status_update(
+                f"Helper LoRA: {len(helper.entries)} modules matched, "
+                f"{len(helper.unmatched)} unmatched ({preview}{suffix})"
+            )
+
+        cuda_devices = sorted(
+            {
+                weight.device.index
+                for entry in helper.entries
+                for weight in [getattr(entry.module, "weight", None)]
+                if isinstance(weight, torch.Tensor)
+                and weight.device.type == "cuda"
+                and weight.device.index is not None
+            }
+        )
+        # Stochastic rounding keeps small deltas alive on the stored ConvRot
+        # grid. Isolate and seed its RNG so model loading is reproducible and
+        # does not perturb training/sample RNG state.
+        with torch.random.fork_rng(devices=cuda_devices, enabled=True):
+            torch.manual_seed(HELPER_LORA_MERGE_SEED)
+            if cuda_devices:
+                torch.cuda.manual_seed_all(HELPER_LORA_MERGE_SEED)
+            merged = helper.merge(stochastic=True)
+        if merged == 0:
+            raise ValueError(
+                f"Helper LoRA {helper_path} matched modules but merged no weights"
+            )
+        transformer._aitk_helper_lora = helper_identity
+        self.print_and_status_update(
+            f"Merged helper LoRA into {merged} transformer modules"
+        )
+
     def load_training_adapter(self, transformer: MiniMaxH3Transformer):
         """Load an assistant LoRA (e.g. a de-distillation adapter) as a LIVE
         module: active during training, deactivated by the sampler. It is
@@ -281,42 +424,17 @@ class MinimaxH3Model(BaseModel):
 
         Path resolution: a local path is used as-is; otherwise the loras
         folder under MODELS_PATH is searched recursively for the filename;
-        otherwise a ``user/repo/file.safetensors`` hub path downloads into
+        otherwise an ``org/repo/path.safetensors`` Hub path downloads into
         MODELS_PATH/loras/training_adapters/.
         """
         from toolkit.config_modules import NetworkConfig
         from toolkit.lora_special import LoRASpecialNetwork
 
         self.print_and_status_update("Loading assistant LoRA")
-        lora_path = self.model_config.assistant_lora_path
-        if not os.path.exists(lora_path):
-            filename = os.path.basename(lora_path)
-            found = find_file_recursive(os.path.join(MODELS_PATH, "loras"), filename)
-            if found is not None:
-                lora_path = found
-            else:
-                lora_splits = lora_path.split("/")
-                if len(lora_splits) != 3:
-                    raise ValueError(
-                        f"Assistant LoRA path {lora_path} is not a local path, a "
-                        f"file under {os.path.join(MODELS_PATH, 'loras')}, or a "
-                        "'user/repo/file.safetensors' hub path."
-                    )
-                import huggingface_hub
-
-                target_dir = os.path.join(MODELS_PATH, "loras", "training_adapters")
-                os.makedirs(target_dir, exist_ok=True)
-                try:
-                    lora_path = huggingface_hub.hf_hub_download(
-                        repo_id="/".join(lora_splits[:2]),
-                        filename=lora_splits[2],
-                        local_dir=target_dir,
-                    )
-                except Exception as e:
-                    raise ValueError(
-                        f"Failed to download assistant LoRA from {lora_path}: {e}"
-                    )
-            self.model_config.assistant_lora_path = lora_path
+        lora_path = self._resolve_adapter_path(
+            self.model_config.assistant_lora_path, "Assistant"
+        )
+        self.model_config.assistant_lora_path = lora_path
 
         # load the adapter; it stays a live module (never merged) and the
         # sampler toggles it off for previews
@@ -494,9 +612,23 @@ class MinimaxH3Model(BaseModel):
         dtype = self.torch_dtype
         self.print_and_status_update("Loading MiniMax-H3 model")
 
-        transformer = self._load_transformer()
+        helper_path, helper_strength, helper_identity = self._resolve_helper_lora()
+        freed = self._evict_incompatible_helper_transformers(helper_identity)
+        if freed:
+            self.print_and_status_update(
+                "Reloading pooled MiniMax-H3 transformer for a different helper LoRA"
+            )
 
-        # load assistant lora if specified (merged into the quantized weights)
+        transformer = self._load_transformer()
+        self.model = transformer
+
+        if helper_path is not None:
+            self._merge_helper_lora(
+                transformer, helper_path, helper_strength, helper_identity
+            )
+
+        # The optional training adapter remains live and toggleable. It is
+        # loaded after the permanent helper so both can coexist.
         if self.model_config.assistant_lora_path is not None:
             self.load_training_adapter(transformer)
 
@@ -1580,6 +1712,14 @@ class MinimaxH3FastModel(MinimaxH3Model):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        if (
+            self.model_config.helper_lora_path
+            and self.model_config.helper_lora_strength != 0.0
+        ):
+            raise ValueError(
+                "helper_lora_path is supported by minimax_h3 and "
+                "minimax_h3_ref2va, but not minimax_h3_vsa/FastH3"
+            )
         kw = self.model_config.model_kwargs
         self.vsa_sparsity: Optional[float] = None
         if bool(kw.get("vsa", True)):

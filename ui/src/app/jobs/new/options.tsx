@@ -40,6 +40,7 @@ type AdditionalSections =
   | 'model.layer_offloading'
   | 'model.low_vram'
   | 'model.qie.match_target_res'
+  | 'model.helper_lora'
   | 'model.assistant_lora_path'
   | 'model.unconditional_lora_path'
   | 'model.model_kwargs.kv_cache'
@@ -786,6 +787,7 @@ export const modelArchs: ModelArch[] = [
         'ostris/minimax_h3_training_adapter/minimax_h3_training_adapter_v1.safetensors',
         undefined,
       ],
+      'config.process[0].model.helper_lora_strength': [1.0, undefined],
       'config.process[0].network.linear': [16, defaultLinearRank],
       'config.process[0].network.linear_alpha': [16, defaultLinearRank],
       'config.process[0].network.network_kwargs.ignore_if_contains': [['adaln_proj'], []],
@@ -817,6 +819,7 @@ export const modelArchs: ModelArch[] = [
       'train.audio_loss_multiplier',
       'datasets.auto_frame_count',
       'model.assistant_lora_path',
+      'model.helper_lora',
     ],
     customModelSelectOptions: [
       {
@@ -917,6 +920,11 @@ export const modelArchs: ModelArch[] = [
           ..., 107, 124 ≈ 5s). Image datasets (num_frames 1) train as single frames, and a sample with num_frames 1
           renders a single image.
         </p>
+        <p>
+          A Permanent Helper LoRA is merged into the in-memory transformer before training and remains active for
+          samples. The downloaded checkpoint is not changed. A normally saved training LoRA contains only the newly
+          trained delta, so it must be used with the same helper path and strength at inference.
+        </p>
       </div>
     ),
   },
@@ -943,6 +951,7 @@ export const modelArchs: ModelArch[] = [
         'ostris/minimax_h3_training_adapter/minimax_h3_ref2va_training_adapter_v1.safetensors',
         undefined,
       ],
+      'config.process[0].model.helper_lora_strength': [1.0, undefined],
       'config.process[0].network.linear': [16, defaultLinearRank],
       'config.process[0].network.linear_alpha': [16, defaultLinearRank],
       'config.process[0].network.network_kwargs.ignore_if_contains': [['adaln_proj'], []],
@@ -973,6 +982,7 @@ export const modelArchs: ModelArch[] = [
       'train.audio_loss_multiplier',
       'datasets.auto_frame_count',
       'model.assistant_lora_path',
+      'model.helper_lora',
     ],
     customModelSelectOptions: [
       {
@@ -1119,6 +1129,9 @@ export const modelArchs: ModelArch[] = [
           , using <code>diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors</code> — the ref2va partition
           of the same release; text encoder and VAEs are shared with the fl2va arch. Everything else (pre-quantized
           load, 24 fps, 17n+5 frame grid, guidance scale 1, single-image mode) matches MiniMax-H3.
+        </p>
+        <p>
+          Permanent Helper LoRAs follow the same merge and output-dependency behavior as MiniMax-H3.
         </p>
       </div>
     ),

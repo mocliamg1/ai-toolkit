@@ -209,6 +209,8 @@ export interface ModelConfig {
   layer_offloading?: boolean;
   layer_offloading_transformer_percent?: number;
   layer_offloading_text_encoder_percent?: number;
+  helper_lora_path?: string;
+  helper_lora_strength?: number;
   assistant_lora_path?: string;
   unconditional_lora_path?: string;
   compile?: boolean;
