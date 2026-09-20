@@ -1,14 +1,13 @@
 'use client';
 import { useMemo } from 'react';
 import {
-  modelArchs,
   ModelArch,
-  groupedModelOptions,
   quantizationOptions,
   defaultQtype,
   jobTypeOptions,
   SampleTags,
 } from './options';
+import { useModelArchs } from '@/extensions/modelArchs';
 import { defaultCompileOptions, defaultDatasetConfig } from './jobConfig';
 import { GroupedSelectOption, JobConfig, SelectOption } from '@/types';
 import { objectCopy, tagsToObj, objToTags } from '@/utils/basic';
@@ -61,9 +60,10 @@ export default function SimpleJob({
   datasetOptions,
   isLoading,
 }: Props) {
+  const { archs: modelArchs, groupedModelOptions } = useModelArchs();
   const modelArch = useMemo(() => {
     return modelArchs.find(a => a.name === jobConfig.config.process[0].model.arch) as ModelArch;
-  }, [jobConfig.config.process[0].model.arch]);
+  }, [modelArchs, jobConfig.config.process[0].model.arch]);
 
   const jobType = useMemo(() => {
     return jobTypeOptions.find(j => j.value === jobConfig.config.process[0].type);
@@ -284,7 +284,7 @@ export default function SimpleJob({
               label="Model Architecture"
               value={jobConfig.config.process[0].model.arch}
               onChange={value => {
-                handleModelArchChange(jobConfig.config.process[0].model.arch, value, jobConfig, setJobConfig);
+                handleModelArchChange(modelArchs, jobConfig.config.process[0].model.arch, value, jobConfig, setJobConfig);
               }}
               options={groupedModelOptions}
             />
@@ -361,16 +361,26 @@ export default function SimpleJob({
                 placeholder=""
               />
             )}
-            {modelArch?.customModelSelectOptions?.map(customOption => (
-              <SelectInput
-                key={customOption.label}
-                label={customOption.label}
-                value={customOption.getValue(jobConfig) ?? ''}
-                doc={customOption.doc}
-                onChange={value => customOption.onChange(value, jobConfig, setJobConfig)}
-                options={customOption.options}
-              />
-            ))}
+            {modelArch?.customModelSelectOptions?.map(customOption =>
+              customOption.type === 'checkbox' ? (
+                <Checkbox
+                  key={customOption.label}
+                  label={customOption.label}
+                  checked={customOption.getValue(jobConfig)}
+                  doc={customOption.doc}
+                  onChange={value => customOption.onChange(value, jobConfig, setJobConfig)}
+                />
+              ) : (
+                <SelectInput
+                  key={customOption.label}
+                  label={customOption.label}
+                  value={customOption.getValue(jobConfig) ?? ''}
+                  doc={customOption.doc}
+                  onChange={value => customOption.onChange(value, jobConfig, setJobConfig)}
+                  options={customOption.options}
+                />
+              ),
+            )}
             {modelArch?.modelNotes && (
               <div className="pt-2">
                 <button

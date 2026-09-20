@@ -36,7 +36,8 @@ import { defaultInferenceJobConfig } from '@/helpers/inferenceJobConfig';
 import { encodeFilePathForUrl, objToTags, tagsToObj } from '@/utils/basic';
 import { latentToImage, payloadToFloat32, readEngineFrames, PreviewInfo } from '@/utils/engineStream';
 import { isMac } from '@/helpers/basic';
-import { modelArchs, getGenerateDefaults, GenerateDefaults } from '@/app/jobs/new/options';
+import { getGenerateDefaults, GenerateDefaults } from '@/app/jobs/new/options';
+import { useModelArchs } from '@/extensions/modelArchs';
 import GenerateFooter from '@/components/generate/GenerateFooter';
 import LoraBrowserModal, { LoraPick } from '@/components/generate/LoraBrowserModal';
 
@@ -296,9 +297,10 @@ function GeneratePageInner() {
 
   // ---- models: the same arch list the training UI uses (jobs/new/options.tsx) ----
   // text-generating archs have no Generate page path yet
+  const { archs: modelArchs } = useModelArchs();
   const archs: GenerateDefaults[] = useMemo(
     () => modelArchs.filter(a => a.group !== 'llm').map(getGenerateDefaults),
-    [],
+    [modelArchs],
   );
   const ready = !!engineStatus?.running;
 
@@ -823,7 +825,7 @@ function GeneratePageInner() {
               {/* status strip over the stage */}
               <div className="absolute top-0 left-0 right-0 z-10 px-3 py-1.5 flex items-center gap-2 text-xs text-gray-300 bg-gradient-to-b from-gray-950/80 to-transparent">
                 {running && <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />}
-                <span className="truncate">
+                <span className="truncate" title={running ? statusLine : undefined}>
                   {running
                     ? statusLine
                     : selected

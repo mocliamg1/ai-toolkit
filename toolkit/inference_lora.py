@@ -147,28 +147,42 @@ class LoRAEntry:
 class InferenceLoRA:
     def __init__(self, path: str, strength: float = 1.0, name: Optional[str] = None):
         self.path = path
+        self.local_path: Optional[str] = None  # set by load(): path resolved on disk
         self.strength = float(strength)
         self.name = name or os.path.splitext(os.path.basename(path))[0]
         self.entries: List[LoRAEntry] = []
         self.unmatched: List[str] = []
+        self.num_keys = 0  # tensors in the file
+        self.num_skipped_keys = 0  # keys with no recognized lora/diff/lokr suffix
+        self.convert_error: Optional[str] = None
         self._hooks: List = []
 
     # ---- loading / key resolution ----
-    def load(self, holder) -> "InferenceLoRA":
-        if not os.path.isfile(self.path):
-            raise FileNotFoundError(f"LoRA not found: {self.path}")
-        sd = load_file(self.path)
+    def load(self, holder, status_fn=None) -> "InferenceLoRA":
+        from toolkit.models.v2.resolver import resolve_lora_file
+
+        # a spec path may be a hub reference (org/repo/file.safetensors); it is
+        # searched for under the models folder before anything is downloaded.
+        # self.path stays as given: it is the spec identity the engine keys its
+        # loaded stack on.
+        self.local_path = resolve_lora_file(self.path, status_fn=status_fn)
+        if status_fn:
+            status_fn(f"Loading LoRA {self.name} from {self.local_path}")
+        sd = load_file(self.local_path)
+        self.num_keys = len(sd)
         convert = getattr(holder, "convert_lora_weights_before_load", None)
         if callable(convert):
             try:
                 sd = convert(sd)
-            except Exception:
-                pass
+            except Exception as e:
+                self.convert_error = f"{type(e).__name__}: {e}"
         roots = self._roots(holder)
         grouped: Dict[Tuple[int, str], dict] = {}
+        self.num_skipped_keys = 0
         for key, tensor in sd.items():
             base, part = self._split(key)
             if part is None:
+                self.num_skipped_keys += 1
                 continue
             grouped.setdefault(base, {})[part] = tensor
         self.entries = []
@@ -372,6 +386,35 @@ class InferenceLoRA:
         m_marker = getattr(self, "_marker", None)
         return merged
 
+    def report(self, max_unmatched: Optional[int] = None) -> str:
+        """Multi-line load report: file, key counts, matched/unmatched modules, unmatched names."""
+        n_groups = len(self.entries) + len(self.unmatched)
+        lines = [
+            f"LoRA {self.name}: {self.local_path or self.path}",
+            f"  {self.num_keys} keys in file -> {n_groups} modules: {len(self.entries)} matched, {len(self.unmatched)} unmatched"
+            + (f", {self.num_skipped_keys} keys ignored (unrecognized suffix)" if self.num_skipped_keys else ""),
+        ]
+        if self.convert_error:
+            lines.append(f"  convert_lora_weights_before_load failed, using raw keys: {self.convert_error}")
+        shown = self.unmatched if max_unmatched is None else self.unmatched[:max_unmatched]
+        for u in shown:
+            lines.append(f"  unmatched: {u}")
+        if len(shown) < len(self.unmatched):
+            lines.append(f"  ... {len(self.unmatched) - len(shown)} more unmatched")
+        return "\n".join(lines)
+
+    def report_line(self, max_unmatched: int = 5) -> str:
+        """One-line form of report() for status strips."""
+        n_groups = len(self.entries) + len(self.unmatched)
+        line = f"LoRA {self.name}: {len(self.entries)}/{n_groups} modules matched ({self.num_keys} keys)"
+        if self.unmatched:
+            shown = ", ".join(self.unmatched[:max_unmatched])
+            more = len(self.unmatched) - max_unmatched
+            line += f"; {len(self.unmatched)} unmatched: {shown}" + (f" +{more} more" if more > 0 else "")
+        if self.convert_error:
+            line += f"; convert failed: {self.convert_error}"
+        return line
+
     def summary(self) -> dict:
         return {
             "name": self.name,
@@ -395,14 +438,17 @@ class LoRAStack:
 
     def load(self, specs: List[dict], status_fn=None):
         for spec in specs:
-            lora = InferenceLoRA(spec["path"], spec.get("strength", 1.0), spec.get("name")).load(self.holder)
+            lora = InferenceLoRA(spec["path"], spec.get("strength", 1.0), spec.get("name")).load(
+                self.holder, status_fn=status_fn
+            )
+            print(f"[AITK] {lora.report()}", flush=True)
             if status_fn:
-                status_fn(
-                    f"LoRA {lora.name}: {len(lora.entries)} modules"
-                    + (f", {len(lora.unmatched)} unmatched" if lora.unmatched else "")
-                )
+                status_fn(lora.report_line())
             if not lora.entries:
-                raise ValueError(f"LoRA {lora.name} matched no modules of this model (unmatched: {lora.unmatched[:3]})")
+                raise ValueError(
+                    f"LoRA {lora.name} matched no modules of this model "
+                    f"({lora.num_keys} keys, {len(lora.unmatched)} unmatched; see the engine job log for the list)"
+                )
             self.loras.append(lora)
         return self
 
