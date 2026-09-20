@@ -860,6 +860,7 @@ export const AI_TOOLKIT_UI_MODELS: ModelArch[] = [
       "datasets.auto_frame_count",
       "model.assistant_lora_path",
       "model.helper_lora",
+      "train.modality_timesteps",
     ],
     customModelSelectOptions: [
       {
@@ -1058,6 +1059,7 @@ export const AI_TOOLKIT_UI_MODELS: ModelArch[] = [
       "datasets.auto_frame_count",
       "model.assistant_lora_path",
       "model.helper_lora",
+      "train.modality_timesteps",
     ],
     customModelSelectOptions: [
       {

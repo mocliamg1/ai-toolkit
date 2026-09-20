@@ -95,6 +95,7 @@ export interface NetworkConfig {
     ignore_if_contains: string[];
   };
   transformer_only?: boolean;
+  pretrained_lora_path?: string | null;
 }
 
 export interface SaveConfig {
@@ -163,9 +164,16 @@ export interface TrainConfig {
   gradient_checkpointing: boolean;
   noise_scheduler: string;
   timestep_type: string;
+  image_timestep_type?: string | null;
+  video_timestep_type?: string | null;
   content_or_style: string;
   optimizer: string;
   lr: number;
+  lr_scheduler?: string;
+  lr_scheduler_params?: {
+    num_warmup_steps?: number;
+    [key: string]: unknown;
+  };
   ema_config?: EMAConfig;
   dtype: string;
   unload_text_encoder: boolean;

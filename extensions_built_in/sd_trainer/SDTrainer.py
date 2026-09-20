@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader, ConcatDataset
 
 from toolkit import train_tools
 from toolkit.basic import value_map, adain, get_mean_std
+from toolkit.timestep_sampling import resolve_timestep_type
 from toolkit.clip_vision_adapter import ClipVisionAdapter
 from toolkit.config_modules import GenerateImageConfig
 from toolkit.data_loader import get_dataloader_datasets
@@ -537,6 +538,7 @@ class SDTrainer(BaseSDTrainProcess):
             prior_pred: Union[torch.Tensor, None] = None,
             **kwargs
     ):
+        batch_timestep_type = resolve_timestep_type(self.train_config, batch)
         loss_target = self.train_config.loss_target
         is_reg = any(batch.get_is_reg_list())
         additional_loss = 0.0
@@ -955,7 +957,7 @@ class SDTrainer(BaseSDTrainProcess):
             if self.sd.is_flow_matching:
                 if self.train_config.linear_timesteps or self.train_config.linear_timesteps2:
                     do_weighted_timesteps = True
-                if self.train_config.timestep_type == "weighted":
+                if batch_timestep_type == "weighted":
                     # use the noise scheduler to get the weights for the timesteps
                     do_weighted_timesteps = True
 
@@ -965,7 +967,7 @@ class SDTrainer(BaseSDTrainProcess):
                 timestep_weight = self.sd.noise_scheduler.get_weights_for_timesteps(
                     timesteps,
                     v2=self.train_config.linear_timesteps2,
-                    timestep_type=self.train_config.timestep_type,
+                    timestep_type=batch_timestep_type,
                     x0_pred=self.sd.x0_pred,
                 ).to(loss.device, dtype=loss.dtype)
                 if len(loss.shape) == 4:
@@ -1468,6 +1470,7 @@ class SDTrainer(BaseSDTrainProcess):
                     self.sd.text_encoder.to(self.sd.te_torch_dtype)
 
             noisy_latents, noise, timesteps, conditioned_prompts, imgs = self.process_general_training_batch(batch)
+            batch_timestep_type = resolve_timestep_type(self.train_config, batch)
             if self.train_config.do_cfg or self.train_config.do_random_cfg:
                 # pick random negative prompts
                 if self.negative_prompt_pool is not None:
@@ -2162,7 +2165,7 @@ class SDTrainer(BaseSDTrainProcess):
                     if self.adapter and isinstance(self.adapter, CustomAdapter):
                         noisy_latents = self.adapter.condition_noisy_latents(noisy_latents, batch)
                 
-                if self.train_config.timestep_type == 'next_sample':
+                if batch_timestep_type == 'next_sample':
                     with self.timer('next_sample_step'):
                         with torch.no_grad():
                             

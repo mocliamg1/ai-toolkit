@@ -27,6 +27,7 @@ type AdditionalSections =
   | 'sample.multi_ctrl_imgs'
   | 'sample.duration'
   | 'train.audio_loss_multiplier'
+  | 'train.modality_timesteps'
   | 'datasets.num_frames'
   | 'model.multistage'
   | 'model.layer_offloading'

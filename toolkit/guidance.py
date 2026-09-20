@@ -2,6 +2,7 @@ import torch
 from typing import Literal, Optional
 
 from toolkit.basic import value_map
+from toolkit.timestep_sampling import resolve_timestep_type
 from toolkit.data_transfer_object.data_loader import DataLoaderBatchDTO
 from toolkit.prompt_utils import PromptEmbeds, concat_prompt_embeds
 from toolkit.stable_diffusion_model import StableDiffusion
@@ -429,15 +430,16 @@ def get_guided_loss_polarity(
         target_neg = noise
 
         if sd.is_flow_matching:
+            batch_timestep_type = resolve_timestep_type(train_config, batch)
             linear_timesteps = any([
                 train_config.linear_timesteps,
                 train_config.linear_timesteps2,
-                train_config.timestep_type == 'linear',
+                batch_timestep_type == 'linear',
             ])
             
             timestep_type = 'linear' if linear_timesteps else None
             if timestep_type is None:
-                timestep_type = train_config.timestep_type
+                timestep_type = batch_timestep_type
             
             sd.noise_scheduler.set_train_timesteps(
                 1000,

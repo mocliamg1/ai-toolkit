@@ -48,6 +48,13 @@ type Props = {
 
 const isDev = process.env.NODE_ENV === 'development';
 
+const timestepOptions: SelectOption[] = [
+  { value: 'sigmoid', label: 'Sigmoid' },
+  { value: 'linear', label: 'Linear' },
+  { value: 'shift', label: 'Shift' },
+  { value: 'weighted', label: 'Weighted' },
+];
+
 export default function SimpleJob({
   jobConfig,
   setJobConfig,
@@ -84,6 +91,7 @@ export default function SimpleJob({
   const isAudioModel = !!(modelArch?.group === 'audio');
   // text-generating models: samples are media in, text out (no size)
   const isLlmModel = !!(modelArch?.group === 'llm');
+  const lrScheduler = jobConfig.config.process[0].train.lr_scheduler ?? 'constant';
 
   const taggedSampleArr: Record<string, any>[] | null = useMemo(() => {
     if (!modelArch) return null;
@@ -614,6 +622,18 @@ export default function SimpleJob({
                 { value: 'lokr', label: 'LoKr' },
               ]}
             />
+            <TextInput
+              label="Initial Weights Path"
+              value={jobConfig.config.process[0].network?.pretrained_lora_path ?? ''}
+              onChange={value =>
+                setJobConfig(value.trim() ? value : undefined, 'config.process[0].network.pretrained_lora_path')
+              }
+              placeholder="/path/to/initial_lora.safetensors"
+            />
+            <p className="pt-2 text-xs text-gray-400">
+              Start from existing LoRA or LoKr weights on the training machine. Leave empty to initialize new
+              weights. Existing job checkpoints take priority when resuming.
+            </p>
             {jobConfig.config.process[0].network?.type == 'lokr' && (
               <SelectInput
                 label="LoKr Factor"
@@ -787,22 +807,83 @@ export default function SimpleJob({
                   min={0}
                   required
                 />
+                <SelectInput
+                  label="Learning Rate Schedule"
+                  className="pt-2"
+                  value={lrScheduler}
+                  onChange={value => {
+                    if (value === lrScheduler) return;
+                    setJobConfig(
+                      {
+                        ...jobConfig.config.process[0].train,
+                        lr_scheduler: value,
+                        lr_scheduler_params: value === 'constant_with_warmup' ? { num_warmup_steps: 1000 } : {},
+                      },
+                      'config.process[0].train',
+                    );
+                  }}
+                  options={[
+                    { value: 'constant', label: 'Constant' },
+                    { value: 'constant_with_warmup', label: 'Constant with Warmup' },
+                    ...(!['constant', 'constant_with_warmup'].includes(lrScheduler)
+                      ? [{ value: lrScheduler, label: `Custom (${lrScheduler})` }]
+                      : []),
+                  ]}
+                />
+                {lrScheduler === 'constant_with_warmup' && (
+                  <>
+                    <NumberInput
+                      label="Warmup Steps"
+                      className="pt-2"
+                      value={jobConfig.config.process[0].train.lr_scheduler_params?.num_warmup_steps ?? 1000}
+                      onChange={value =>
+                        setJobConfig(
+                          Math.max(0, Math.trunc(value ?? 0)),
+                          'config.process[0].train.lr_scheduler_params.num_warmup_steps',
+                        )
+                      }
+                      min={0}
+                      required
+                    />
+                    <p className="pt-2 text-xs text-gray-400">
+                      Ramp the learning rate up over this many optimizer steps, then keep it constant. Set to 0
+                      to disable warmup.
+                    </p>
+                  </>
+                )}
               </div>
               {!isLlmModel && (
                 <div>
                   {disableSections.includes('train.timestep_type') ? null : (
-                    <SelectInput
-                      label="Timestep Type"
-                      value={jobConfig.config.process[0].train.timestep_type}
-                      disabled={disableSections.includes('train.timestep_type') || false}
-                      onChange={value => setJobConfig(value, 'config.process[0].train.timestep_type')}
-                      options={[
-                        { value: 'sigmoid', label: 'Sigmoid' },
-                        { value: 'linear', label: 'Linear' },
-                        { value: 'shift', label: 'Shift' },
-                        { value: 'weighted', label: 'Weighted' },
-                      ]}
-                    />
+                    <>
+                      <SelectInput
+                        label="Timestep Type"
+                        value={jobConfig.config.process[0].train.timestep_type}
+                        disabled={disableSections.includes('train.timestep_type') || false}
+                        onChange={value => setJobConfig(value, 'config.process[0].train.timestep_type')}
+                        options={timestepOptions}
+                      />
+                      {modelArch?.additionalSections?.includes('train.modality_timesteps') && (
+                        <>
+                          {(['image', 'video'] as const).map(modality => (
+                            <SelectInput
+                              key={modality}
+                              label={modality === 'image' ? 'Image Timestep Type' : 'Video Timestep Type'}
+                              className="pt-2"
+                              value={jobConfig.config.process[0].train[`${modality}_timestep_type`] ?? ''}
+                              onChange={value =>
+                                setJobConfig(value || undefined, `config.process[0].train.${modality}_timestep_type`)
+                              }
+                              options={[{ value: '', label: 'Use Timestep Type' }, ...timestepOptions]}
+                            />
+                          ))}
+                          <p className="pt-2 text-xs text-gray-400">
+                            Overrides the setting above for single-frame images or multi-frame videos.
+                            Timestep Bias applies to both.
+                          </p>
+                        </>
+                      )}
+                    </>
                   )}
                   <SelectInput
                     label="Timestep Bias"

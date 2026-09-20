@@ -8,6 +8,7 @@ import torchaudio
 
 from toolkit.audio.album_artwork import add_album_artwork
 from toolkit.prompt_utils import PromptEmbeds
+from toolkit.timestep_sampling import validate_timestep_overrides
 from torchao.quantization.quant_primitives import _DTYPE_TO_BIT_WIDTH
 
 ImgExt = Literal['jpg', 'png', 'webp']
@@ -555,12 +556,15 @@ class TrainConfig:
         self.target_norm_std = kwargs.get('target_norm_std', None)
         self.target_norm_std_value = kwargs.get('target_norm_std_value', 1.0)
         self.timestep_type = kwargs.get('timestep_type', 'sigmoid')  # sigmoid, linear, lognorm_blend, next_sample, weighted, one_step
+        self.image_timestep_type: Optional[str] = kwargs.get('image_timestep_type', None)
+        self.video_timestep_type: Optional[str] = kwargs.get('video_timestep_type', None)
         
         self.first_timestep_chance = kwargs.get('first_timestep_chance', 0.0)
         
         self.next_sample_timesteps = kwargs.get('next_sample_timesteps', 8)
         self.linear_timesteps = kwargs.get('linear_timesteps', False)
         self.linear_timesteps2 = kwargs.get('linear_timesteps2', False)
+        validate_timestep_overrides(self)
         self.disable_sampling = kwargs.get('disable_sampling', False)
 
         # will cache a blank prompt or the trigger word, and unload the text encoder to cpu

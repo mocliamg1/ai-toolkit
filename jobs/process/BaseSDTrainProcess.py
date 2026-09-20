@@ -25,6 +25,7 @@ from huggingface_hub import HfApi, interpreter_login
 from toolkit.memory_management import MemoryManager
 
 from toolkit.basic import value_map
+from toolkit.timestep_sampling import resolve_timestep_type
 from toolkit.buckets import get_bucket_for_image_size
 from toolkit.clip_vision_adapter import ClipVisionAdapter
 from toolkit.custom_adapter import CustomAdapter
@@ -1047,6 +1048,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
         return noise
 
     def process_general_training_batch(self, batch: 'DataLoaderBatchDTO'):
+        batch_timestep_type = resolve_timestep_type(self.train_config, batch)
         with torch.no_grad():
             with self.timer('prepare_prompt'):
                 prompts = batch.get_caption_list()
@@ -1187,15 +1189,15 @@ class BaseSDTrainProcess(BaseTrainProcess):
                     linear_timesteps = any([
                         self.train_config.linear_timesteps,
                         self.train_config.linear_timesteps2,
-                        self.train_config.timestep_type == 'linear',
-                        self.train_config.timestep_type in ['one_step', 'two_step', 'four_step', 'eight_step'],
+                        batch_timestep_type == 'linear',
+                        batch_timestep_type in ['one_step', 'two_step', 'four_step', 'eight_step'],
                     ])
                     
                     timestep_type = 'linear' if linear_timesteps else None
                     if timestep_type is None:
-                        timestep_type = self.train_config.timestep_type
+                        timestep_type = batch_timestep_type
                     
-                    if self.train_config.timestep_type == 'next_sample':
+                    if batch_timestep_type == 'next_sample':
                         # simulate a sample
                         num_train_timesteps = self.train_config.next_sample_timesteps
                         timestep_type = 'shift'
@@ -1242,16 +1244,16 @@ class BaseSDTrainProcess(BaseTrainProcess):
                 if is_reg:
                     content_or_style = self.train_config.content_or_style_reg
 
-                if self.train_config.timestep_type in ['two_step', 'four_step', 'eight_step']:
-                    if self.train_config.timestep_type == 'two_step':
+                if batch_timestep_type in ['two_step', 'four_step', 'eight_step']:
+                    if batch_timestep_type == 'two_step':
                         indice_choices = [0, 499]
-                    elif self.train_config.timestep_type == 'four_step':
+                    elif batch_timestep_type == 'four_step':
                         indice_choices = [0, 250, 500, 750]
-                    elif self.train_config.timestep_type == 'eight_step':
+                    elif batch_timestep_type == 'eight_step':
                         indice_choices = [0, 125, 250, 375, 500, 625, 750, 875]
                     timestep_indices = torch.tensor(random.choices(indice_choices, k=batch_size), device=self.device_torch)
                     timestep_indices = timestep_indices.long()
-                elif self.train_config.timestep_type == 'next_sample':
+                elif batch_timestep_type == 'next_sample':
                     timestep_indices = torch.randint(
                             0,
                             num_train_timesteps - 2, # -1 for 0 idx, -1 so we can step
@@ -1259,7 +1261,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
                             device=self.device_torch
                         )
                     timestep_indices = timestep_indices.long()
-                elif self.train_config.timestep_type == 'one_step':
+                elif batch_timestep_type == 'one_step':
                     timestep_indices = torch.zeros((batch_size,), device=self.device_torch, dtype=torch.long)
                 elif content_or_style in ['style', 'content']:
                     # this is from diffusers training code
