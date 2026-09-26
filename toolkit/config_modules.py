@@ -1094,6 +1094,10 @@ class DatasetConfig:
         # can lead to fast motion/chipmunking. This will prevent the video from shrinking to fit, and instead, trim
         # the tail of the video. Usually only a few frames. 
         self.trim_auto_frame_count_tail: bool = kwargs.get('trim_auto_frame_count_tail', True)
+
+        # caps the frame count auto_frame_count will pick per video (0 = no limit). Longer videos
+        # are trimmed from the start at the dataset fps instead of being shrunk to fit.
+        self.max_frames: int = int(kwargs.get('max_frames', 0) or 0)
         
         # debug the frame count and frame selection. You dont need this. It is for debugging.
         self.debug: bool = kwargs.get('debug', False)

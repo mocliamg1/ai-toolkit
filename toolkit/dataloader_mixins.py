@@ -506,6 +506,13 @@ class AudioProcessingDTOMixin:
         
 
 class ImageProcessingDTOMixin:
+    def is_auto_frame_count_capped(self: 'FileItemDTO', total_frames: int, video_fps: float) -> bool:
+        # true when the video runs longer than dataset max_frames at the dataset fps
+        max_frames = self.dataset_config.max_frames
+        if not max_frames or max_frames <= 0:
+            return False
+        return int(total_frames / video_fps * self.dataset_config.fps) > max_frames
+
     def get_auto_frame_count(self: 'FileItemDTO', total_frames: int, video_fps: float) -> int:
         # frame count this video will train at with auto_frame_count. Also called at
         # FileItemDTO init so bucket keys carry the real frame count, so it must give
@@ -515,12 +522,16 @@ class ImageProcessingDTOMixin:
 
         desired_num_frames = int(vid_length_seconds * self.dataset_config.fps)
 
+        is_capped = self.is_auto_frame_count_capped(total_frames, video_fps)
+        if is_capped:
+            desired_num_frames = self.dataset_config.max_frames
+
         if getattr(self, 'frame_count_snapper', None) is not None:
             # model-specific valid-frame-count grid (e.g. minimax_h3's 17n+5)
             desired_num_frames = self.frame_count_snapper(desired_num_frames)
         else:
             # make sure it is divisible by temporal_compression
-            if self.dataset_config.trim_auto_frame_count_tail:
+            if self.dataset_config.trim_auto_frame_count_tail or is_capped:
                 # snap to the largest valid count that fits inside the video (after the
                 # key frame +1 below) so trim mode never overshoots the source, which
                 # would freeze the last frame and pad the audio tail with silence
@@ -573,12 +584,19 @@ class ImageProcessingDTOMixin:
             
             frames_to_extract = []
             
+            # pull frames in real time from the start and drop the tail instead of shrinking
+            trim_tail = False
             if self.dataset_config.auto_frame_count:
                 self.num_frames = self.get_auto_frame_count(total_frames, video_fps)
+                # a video capped by max_frames is always trimmed, shrinking it would speed it up
+                trim_tail = (
+                    self.dataset_config.trim_auto_frame_count_tail
+                    or self.is_auto_frame_count_capped(total_frames, video_fps)
+                )
 
 
             # Always stretch/shrink to the requested number of frames if needed
-            if self.dataset_config.auto_frame_count and self.dataset_config.trim_auto_frame_count_tail:
+            if trim_tail:
                 # preserve real time: pull frames at the dataset fps from the start of the
                 # video and trim the tail that didn't fit the snapped frame count, instead of
                 # shrinking the whole video to fit (which speeds up motion / chipmunks audio).
@@ -788,10 +806,7 @@ class ImageProcessingDTOMixin:
                             gain = target_peak / (peak + eps)
                             waveform = waveform * gain
 
-                        trim_tail_audio = (
-                            self.dataset_config.auto_frame_count
-                            and self.dataset_config.trim_auto_frame_count_tail
-                        )
+                        trim_tail_audio = trim_tail
 
                         # Slice to the selected clip region (when we have a meaningful time range)
                         if source_duration > 0.0:
@@ -1838,6 +1853,8 @@ class LatentCachingFileItemDTOMixin:
                 # changes frame selection; only added when on so caches made before
                 # this option existed stay valid when it is off
                 item["trim_auto_frame_count_tail"] = True
+            if self.dataset_config.max_frames > 0:
+                item["max_frames"] = self.dataset_config.max_frames
             is_video = True
         elif self.is_video and self.dataset_config.num_frames > 1:
             item["num_frames"] = self.dataset_config.num_frames

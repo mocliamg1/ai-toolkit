@@ -340,6 +340,17 @@ const docs: { [key: string]: ConfigDoc } = {
       </>
     ),
   },
+  'datasets.max_frames': {
+    title: 'Max Frames',
+    description: (
+      <>
+        The maximum number of frames Auto Frame Count will use for a single video. Videos longer than this are trimmed
+        from the start at the dataset FPS, so they keep their real speed instead of being sped up to fit. The final
+        count is snapped down to a frame count the model supports. Leave empty for no limit. Useful to keep VRAM usage
+        in check when the dataset contains long videos.
+      </>
+    ),
+  },
   'model.model_kwargs.instruction': {
     title: 'LLM Prompt',
     description: (

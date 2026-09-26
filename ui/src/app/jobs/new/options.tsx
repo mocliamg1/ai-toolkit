@@ -59,7 +59,16 @@ export interface CustomModelCheckboxOption {
   doc?: ConfigDoc;
 }
 
-export type CustomModelOption = CustomModelSelectOption | CustomModelCheckboxOption;
+export interface CustomModelTextOption {
+  type: 'text';
+  label: string;
+  placeholder?: string;
+  getValue: (config: JobConfig) => string | undefined;
+  onChange: (value: string, config: JobConfig, setJobConfig: (value: any, key: string) => void) => void;
+  doc?: ConfigDoc;
+}
+
+export type CustomModelOption = CustomModelSelectOption | CustomModelCheckboxOption | CustomModelTextOption;
 
 export type SampleTag = {
   title: string;

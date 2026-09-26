@@ -2,7 +2,7 @@
 // registers in AI_TOOLKIT_MODELS. Loaded at runtime by the UI, not bundled:
 // see ui/src/extensions/README.md for the convention and the allowed imports.
 import Link from "next/link";
-import type { ModelArch } from "@/app/jobs/new/options";
+import type { CustomModelOption, ModelArch } from "@/app/jobs/new/options";
 import type { JobConfig } from "@/types";
 import {
   defaultSampleConfig,
@@ -11,6 +11,78 @@ import {
 
 const defaultNameOrPath = "";
 const defaultLinearRank = 32;
+
+// Local-file overrides for the MiniMax-H3 weights (e.g. a bf16 transformer in
+// place of the int8 ConvRot repack). Each maps to model_kwargs.<component>_path;
+// the transformer key follows the active partition (dit_<partition>_path).
+function minimaxWeightOverrideOptions(
+  defaultPartition: string,
+): CustomModelOption[] {
+  const getKwargs = (config: JobConfig) =>
+    config?.config?.process?.[0]?.model?.model_kwargs ?? {};
+  const transformerKey = (config: JobConfig) =>
+    `dit_${String(getKwargs(config).partition ?? defaultPartition).toLowerCase()}_path`;
+  const doc = {
+    title: "MiniMax-H3 Weight Overrides",
+    description: (
+      <div className="space-y-2">
+        <p>
+          Load a component from a local <code>.safetensors</code> file instead
+          of the default Comfy-Org file, e.g. a bf16 transformer instead of the
+          int8 ConvRot repack. Leave empty to use the default. The file must
+          already exist; overrides are never downloaded.
+        </p>
+        <p>
+          A full-precision transformer is quantized on load to the selected
+          transformer quantization; turn quantization off to train it in bf16
+          (~66GB for the 33B DiT).
+        </p>
+      </div>
+    ),
+  };
+  const pathOption = (
+    label: string,
+    key: (config: JobConfig) => string,
+    placeholder: string,
+  ): CustomModelOption => ({
+    type: "text",
+    label,
+    placeholder,
+    doc,
+    getValue: (config) => getKwargs(config)[key(config)],
+    onChange: (value, config, setJobConfig) => {
+      const kwargs = { ...getKwargs(config) };
+      if (value.trim() === "") {
+        delete kwargs[key(config)];
+      } else {
+        kwargs[key(config)] = value;
+      }
+      setJobConfig(kwargs, "config.process[0].model.model_kwargs");
+    },
+  });
+  return [
+    pathOption(
+      "Transformer Path Override",
+      transformerKey,
+      "Default: int8 ConvRot",
+    ),
+    pathOption(
+      "Text Encoder Path Override",
+      () => "text_encoder_path",
+      "Default: nvfp4 AWQ",
+    ),
+    pathOption(
+      "Video VAE Path Override",
+      () => "video_vae_path",
+      "Default: fp16",
+    ),
+    pathOption(
+      "Audio VAE Path Override",
+      () => "audio_vae_path",
+      "Default: fp32",
+    ),
+  ];
+}
 
 export const AI_TOOLKIT_UI_MODELS: ModelArch[] = [
   {
@@ -952,6 +1024,7 @@ export const AI_TOOLKIT_UI_MODELS: ModelArch[] = [
           ),
         },
       },
+      ...minimaxWeightOverrideOptions("fl2va_pruned"),
     ],
     modelNotes: (
       <div className="space-y-2">
@@ -981,6 +1054,11 @@ export const AI_TOOLKIT_UI_MODELS: ModelArch[] = [
           so nothing is re-quantized on load. Picking a different quantization
           re-quantizes the pre-quantized layers into that format, one layer at a
           time.
+        </p>
+        <p>
+          The Path Override fields load any of these components from a local
+          file instead, e.g. a bf16 transformer in place of the int8 ConvRot
+          repack.
         </p>
         <p>
           Supports t2v and first-frame i2v (ctrl img / i2v datasets) with joint
@@ -1229,6 +1307,7 @@ export const AI_TOOLKIT_UI_MODELS: ModelArch[] = [
           ),
         },
       },
+      ...minimaxWeightOverrideOptions("ref2va_pruned"),
     ],
     modelNotes: (
       <div className="space-y-2">

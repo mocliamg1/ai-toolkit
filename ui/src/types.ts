@@ -135,6 +135,7 @@ export interface DatasetConfig {
   control_path_2?: string | null;
   control_path_3?: string | null;
   auto_frame_count?: boolean;
+  max_frames?: number;
 }
 
 export interface EMAConfig {

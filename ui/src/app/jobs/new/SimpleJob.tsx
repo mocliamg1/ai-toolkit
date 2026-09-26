@@ -378,6 +378,15 @@ export default function SimpleJob({
                   doc={customOption.doc}
                   onChange={value => customOption.onChange(value, jobConfig, setJobConfig)}
                 />
+              ) : customOption.type === 'text' ? (
+                <TextInput
+                  key={customOption.label}
+                  label={customOption.label}
+                  value={customOption.getValue(jobConfig) ?? ''}
+                  doc={customOption.doc}
+                  onChange={value => customOption.onChange(value, jobConfig, setJobConfig)}
+                  placeholder={customOption.placeholder ?? ''}
+                />
               ) : (
                 <SelectInput
                   key={customOption.label}
@@ -1425,6 +1434,20 @@ export default function SimpleJob({
                           placeholder="eg. 41"
                           min={1}
                           required
+                        />
+                      )}
+                      {modelArch?.additionalSections?.includes('datasets.auto_frame_count') && dataset.auto_frame_count && (
+                        <NumberInput
+                          label="Max Frames"
+                          className="pt-2"
+                          docKey="datasets.max_frames"
+                          value={dataset.max_frames ?? null}
+                          onChange={value =>
+                            setJobConfig(value || undefined, `config.process[0].datasets[${i}].max_frames`)
+                          }
+                          placeholder="No limit"
+                          min={1}
+                          allowEmpty
                         />
                       )}
                     </div>

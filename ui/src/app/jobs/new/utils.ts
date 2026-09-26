@@ -130,6 +130,7 @@ export const handleModelArchChange = (
     }
     if (!hasAutoFrameCount) {
       delete newDataset.auto_frame_count;
+      delete newDataset.max_frames;
     }
     return newDataset;
   });
