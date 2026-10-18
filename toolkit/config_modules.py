@@ -523,7 +523,7 @@ class TrainConfig:
         self.correct_pred_norm = kwargs.get('correct_pred_norm', False)
         self.correct_pred_norm_multiplier = kwargs.get('correct_pred_norm_multiplier', 1.0)
 
-        self.loss_type = kwargs.get('loss_type', 'mse') # mse, mae, wavelet, pixelspace, mean_flow, pseudo_huber
+        self.loss_type = kwargs.get('loss_type', 'mse') # mse, mae, wavelet, band, pixelspace, mean_flow, pseudo_huber
         
         # do the loss on a timestep to 0 prediction
         self.t0_loss_target = kwargs.get('t0_loss_target', False)
@@ -572,6 +572,9 @@ class TrainConfig:
         self.unload_text_encoder = kwargs.get('unload_text_encoder', False)
         # will toggle all datasets to cache text embeddings
         self.cache_text_embeddings: bool = kwargs.get('cache_text_embeddings', False)
+        # merge all datasets into one file list so buckets/batches mix across folders;
+        # reg datasets pool separately from non-reg ones
+        self.pool_datasets: bool = kwargs.get('pool_datasets', False)
         # for swapping which parameters are trained during training
         self.do_paramiter_swapping = kwargs.get('do_paramiter_swapping', False)
         # 0.1 is 10% of the parameters active at a time lower is less vram, higher is more
@@ -1065,6 +1068,9 @@ class DatasetConfig:
         # which can cause severe PCIe thrashing for users at the VRAM ceiling.
         # Opt in if you have stable VRAM headroom and want the transfer speedup.
         self.pin_memory: bool = kwargs.get('pin_memory', False)
+        # threads that decode/resize the images of one bucketed batch concurrently inside a
+        # dataloader worker; 0 or 1 loads the batch serially
+        self.batch_load_threads: int = kwargs.get('batch_load_threads', min(8, os.cpu_count() or 1))
         # threads used to prep (decode/resize) items ahead of the VAE while caching latents
         self.cache_latents_num_workers: int = kwargs.get('cache_latents_num_workers', min(6, os.cpu_count() or 1))
         self.extra_values: List[float] = kwargs.get('extra_values', [])
@@ -1120,10 +1126,28 @@ class DatasetConfig:
 
 def preprocess_dataset_raw_config(raw_config: List[dict]) -> List[dict]:
     """
-    This just splits up the datasets by resolutions so you dont have to do it manually
+    This just splits up the datasets by paths and resolutions so you dont have to do it manually
     :param raw_config:
     :return:
     """
+    # split up datasets by folder_path / dataset_path lists: one dataset per path,
+    # all other settings shared (pair with train.pool_datasets to mix them)
+    path_split_config = []
+    for dataset in raw_config:
+        split = False
+        for path_key in ['folder_path', 'dataset_path']:
+            paths = dataset.get(path_key, None)
+            if isinstance(paths, (list, tuple)):
+                for path in paths:
+                    dataset_copy = dataset.copy()
+                    dataset_copy[path_key] = path
+                    path_split_config.append(dataset_copy)
+                split = True
+                break
+        if not split:
+            path_split_config.append(dataset)
+    raw_config = path_split_config
+
     # split up datasets by resolutions
     new_config = []
     for dataset in raw_config:
@@ -1298,16 +1322,19 @@ class GenerateImageConfig:
         for file in files:
             tmp_thumb = os.path.join(tmp_folder, file + '.thumb')
             try:
-                if self._generate_thumbnail(os.path.join(tmp_folder, file), tmp_thumb):
+                thumb_ext = self._generate_thumbnail(os.path.join(tmp_folder, file), tmp_thumb)
+                if thumb_ext:
                     os.makedirs(thumbs_folder, exist_ok=True)
-                    os.replace(tmp_thumb, os.path.join(thumbs_folder, file + '.jpg'))
+                    os.replace(tmp_thumb, os.path.join(thumbs_folder, file + thumb_ext))
             except Exception as e:
                 print(f"Failed to generate thumbnail for {file}: {e}")
         for file in files:
             os.replace(os.path.join(tmp_folder, file), os.path.join(real_folder, file))
 
     def _generate_thumbnail(self, media_path, thumb_path):
-        # 300x300 center-cropped 90% jpg. Returns True if one was written.
+        # 300x300 center-cropped thumb. Returns the extension it wrote ('.png'
+        # when the source has alpha, which jpg cannot carry, else '.jpg'), or
+        # None when the format is not thumbnailable.
         from PIL import Image as PILImage
         ext = os.path.splitext(media_path)[1].lower()
         img = None
@@ -1325,15 +1352,23 @@ class GenerateImageConfig:
             from toolkit.audio.album_artwork import create_artwork, load_waveform
             img = create_artwork(load_waveform(media_path), size=300)
         if img is None:
-            return False
-        img = img.convert('RGB')
+            return None
+        # without this the RGB under a transparent pixel shows through as a
+        # garbage color, which is what an RGBA sample's thumb used to look like
+        has_alpha = img.mode in ('RGBA', 'LA') or (
+            img.mode == 'P' and 'transparency' in img.info
+        )
+        img = img.convert('RGBA' if has_alpha else 'RGB')
         w, h = img.size
         side = min(w, h)
         left = (w - side) // 2
         top = (h - side) // 2
         img = img.crop((left, top, left + side, top + side)).resize((300, 300), PILImage.LANCZOS)
+        if has_alpha:
+            img.save(thumb_path, format='PNG', optimize=True)
+            return '.png'
         img.save(thumb_path, format='JPEG', quality=90)
-        return True
+        return '.jpg'
 
     def save_image(self, image, count: int = 0, max_count=0):
         # make parent dirs
@@ -1376,6 +1411,10 @@ class GenerateImageConfig:
             if self.output_ext == 'mp3':
                 add_album_artwork(audio_path)
         else:
+            if image.mode == 'RGBA' and self.output_ext not in ['png', 'webp']:
+                # jpg cannot carry alpha, and dropping it silently would hide
+                # the transparency an RGBA model just generated
+                self.output_ext = 'png'
             # TODO save image gen header info for A1111 and us, our seeds probably wont match
             image.save(self.get_image_path(count, max_count))
             # do prompt file
