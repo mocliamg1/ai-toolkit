@@ -38,6 +38,16 @@ def ref_frame_indices(total, src_fps, num_frames, dataset_fps, trim_tail):
     ]
 
 
+def auto_frame_count_trims(dataset_config, total, src_fps):
+    """Dataset-identical trim decision: trim mode, or a clip capped by max_frames."""
+    if not dataset_config.auto_frame_count:
+        return False
+    if dataset_config.trim_auto_frame_count_tail:
+        return True
+    max_frames = dataset_config.max_frames
+    return max_frames > 0 and int(total / src_fps * dataset_config.fps) > max_frames
+
+
 def ref_video_num_frames(model, path, dataset_config):
     """Dataset-identical frame count for a reference video."""
     cap = cv2.VideoCapture(path)
@@ -46,6 +56,8 @@ def ref_video_num_frames(model, path, dataset_config):
     cap.release()
     if dataset_config.auto_frame_count:
         num_frames = int(total / src_fps * dataset_config.fps)
+        if dataset_config.max_frames > 0:
+            num_frames = min(num_frames, dataset_config.max_frames)
         snapper = model.get_frame_count_snapper()
         if snapper is not None:
             num_frames = snapper(num_frames)
@@ -67,10 +79,7 @@ def load_video_ref_for_te(model, path, dataset_config=None, max_frames=None):
     if dataset_config is not None:
         num_frames, total, src_fps = ref_video_num_frames(model, path, dataset_config)
         ds_fps = dataset_config.fps
-        trim = bool(
-            dataset_config.auto_frame_count
-            and dataset_config.trim_auto_frame_count_tail
-        )
+        trim = auto_frame_count_trims(dataset_config, total, src_fps)
     else:
         cap = cv2.VideoCapture(path)
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -187,15 +196,15 @@ def load_ref_video_latent(
     # dataset-identical frame count
     if dataset_config.auto_frame_count:
         num_frames = int(total / src_fps * dataset_config.fps)
+        if dataset_config.max_frames > 0:
+            num_frames = min(num_frames, dataset_config.max_frames)
         snapper = model.get_frame_count_snapper()
         if snapper is not None:
             num_frames = snapper(num_frames)
     else:
         num_frames = dataset_config.num_frames
 
-    trim_tail = bool(
-        dataset_config.auto_frame_count and dataset_config.trim_auto_frame_count_tail
-    )
+    trim_tail = auto_frame_count_trims(dataset_config, total, src_fps)
     hash_dict = {
         "signature": get_quick_signature_string(path),
         "ref_sizing": "match_target_area",

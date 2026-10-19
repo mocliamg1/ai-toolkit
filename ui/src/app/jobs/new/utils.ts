@@ -1,5 +1,5 @@
 import { GroupedSelectOption, JobConfig, SelectOption } from '@/types';
-import { modelArchs, ModelArch } from './options';
+import { ModelArch } from './options';
 import { objectCopy } from '@/utils/basic';
 
 const expandDatasetDefaults = (
@@ -22,6 +22,7 @@ const expandDatasetDefaults = (
 };
 
 export const handleModelArchChange = (
+  modelArchs: ModelArch[],
   currentArchName: string,
   newArchName: string,
   jobConfig: JobConfig,
@@ -65,6 +66,12 @@ export const handleModelArchChange = (
 
   // set new model
   setJobConfig(newArchName, 'config.process[0].model.arch');
+
+  // Avoid retaining invisible overrides when leaving a model that exposes them.
+  if (!newArch?.additionalSections?.includes('train.modality_timesteps')) {
+    setJobConfig(undefined, 'config.process[0].train.image_timestep_type');
+    setJobConfig(undefined, 'config.process[0].train.video_timestep_type');
+  }
 
   // update datasets
   const hasControlPath = newArch?.additionalSections?.includes('datasets.control_path') || false;
@@ -123,6 +130,7 @@ export const handleModelArchChange = (
     }
     if (!hasAutoFrameCount) {
       delete newDataset.auto_frame_count;
+      delete newDataset.max_frames;
     }
     return newDataset;
   });

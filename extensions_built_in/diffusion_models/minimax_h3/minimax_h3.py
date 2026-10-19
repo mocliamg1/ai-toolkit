@@ -50,22 +50,26 @@ from toolkit.accelerator import unwrap_model
 from toolkit.advanced_prompt_embeds import AdvancedPromptEmbeds
 from toolkit.basic import flush
 from toolkit.config_modules import GenerateImageConfig, ModelConfig
-from toolkit.memory_management import MemoryManager
+from toolkit.dto import DTO
 from toolkit.metadata import get_meta_for_safetensors
 from toolkit.models.base_model import BaseModel
+from toolkit.models.v2.text_encoders.qwen3_vl import Qwen3VLTextEncoder
+from toolkit.models.v2.resolver import (
+    find_file_recursive,
+    repo_id_from_name_or_path,
+    resolve_comfy_file,
+)
 from toolkit.paths import MODELS_PATH
 from toolkit.util.comfy_quant_import import import_comfy_quantized_layers
 from toolkit.util.ostris_quant import OstrisLinear
 from toolkit.samplers.custom_flowmatch_sampler import (
     CustomFlowMatchEulerDiscreteScheduler,
 )
-from toolkit.util.quantize import get_qtype, quantize, quantize_model
-from optimum.quanto import freeze
 
 from .src import packing
 
 packing_video_exts = [".mp4", ".avi", ".mov", ".webm", ".mkv", ".wmv", ".m4v", ".flv"]
-from .src.audio_vae import MiniMaxH3AudioVAE, fold_audio_vae_weight_norm
+from .src.audio_vae import MiniMaxH3AudioVAE
 from .src.packing import (
     KEYFRAME_ENCODE_SEED,
     KEYFRAME_NOISE_AUG_T,
@@ -132,9 +136,14 @@ COMFY_FILES = {
     "text_encoder": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
     "video_vae": "vae/minimax_h3_video_vae_fp16.safetensors",
     "audio_vae": "vae/minimax_h3_audio_vae_fp32.safetensors",
+    "dit_fasth3": "diffusion_models/fastvideo_fasth3_8step_v2_pruned_int8_convrot.safetensors",
 }
+# FastH3 8-Step V2 (FastVideo DMD2 + VSA distill) comfy repack: DiT plus the
+# shared text encoder and VAEs at the same repo-relative paths
+FASTH3_REPO = "FastVideo/FastVideo-FastH3-Comfy"
 # tokenizer/processor/text-encoder config come from the original repo (tiny files)
 ORIGINAL_REPO = "MiniMaxAI/MiniMax-H3"
+HELPER_LORA_MERGE_SEED = 0
 
 
 def new_save_image_function(
@@ -185,6 +194,10 @@ class MiniMaxH3VaeBundle(torch.nn.Module):
 
 class MinimaxH3Model(BaseModel):
     arch = "minimax_h3"
+    # video flow shift; audio stays on AUDIO_SIGMA_SHIFT, remapped from this
+    video_sigma_shift = packing.VIDEO_SIGMA_SHIFT
+    # hub repo for missing files when name_or_path isn't an org/repo id
+    comfy_repo = COMFY_REPO
     use_old_lokr_format = False
 
     def __init__(
@@ -231,29 +244,11 @@ class MinimaxH3Model(BaseModel):
             "audio_flow_shift",
         )
 
-    @staticmethod
-    def get_train_scheduler(flow_shift: float = packing.VIDEO_SIGMA_SHIFT):
-        flow_shift = _resolve_flow_shift(
-            flow_shift, packing.VIDEO_SIGMA_SHIFT, "flow_shift"
-        )
+    @classmethod
+    def get_train_scheduler(cls):
         return CustomFlowMatchEulerDiscreteScheduler(
-            **{**scheduler_config, "shift": flow_shift}
+            **{**scheduler_config, "shift": cls.video_sigma_shift}
         )
-
-    def remap_audio_sigma(self, video_sigma):
-        return remap_sigma(
-            video_sigma,
-            from_shift=self.flow_shift,
-            to_shift=self.audio_flow_shift,
-        )
-
-    def build_sigma_schedules(self, num_steps: int, device=None):
-        video_sigmas = packing.build_sigma_schedule(num_steps, self.flow_shift)
-        audio_sigmas = self.remap_audio_sigma(video_sigmas)
-        if device is not None:
-            video_sigmas = video_sigmas.to(device)
-            audio_sigmas = audio_sigmas.to(device)
-        return video_sigmas, audio_sigmas
 
     def get_bucket_divisibility(self):
         # 16x VAE spatial compression * 2x2 transformer patch
@@ -280,64 +275,21 @@ class MinimaxH3Model(BaseModel):
     # ------------------------------------------------------------------
     # Loading
     # ------------------------------------------------------------------
-    @staticmethod
-    def _find_file_recursive(root_dir: str, filename: str) -> Optional[str]:
-        """First (breadth-stable, sorted) match of ``filename`` anywhere under
-        ``root_dir``."""
-        if not os.path.isdir(root_dir):
-            return None
-        for dirpath, dirnames, filenames in os.walk(root_dir):
-            dirnames.sort()
-            if filename in filenames:
-                return os.path.join(dirpath, filename)
-        return None
-
     def _resolve_comfy_file(self, component: str) -> str:
-        """Find a weight file at its local location, or download it there
-        when (and only when) it is missing.
-
-        Search order: model_kwargs override, the repo-relative path under
-        MODELS_PATH (diffusion_models/, text_encoders/, vae/), the bare
-        filename at the root, any subfolder of the component's category
-        folder (recursive — e.g. diffusion_models/my_custom_sub/), the same
-        spots under name_or_path when it is a local folder, then the hub —
-        downloaded to the repo-relative path under MODELS_PATH.
-        """
-        override = self.model_config.model_kwargs.get(f"{component}_path", None)
-        if override is not None:
-            if not os.path.exists(override):
-                raise FileNotFoundError(
-                    f"model_kwargs.{component}_path does not exist: {override}"
-                )
-            return override
-
-        rel_path = COMFY_FILES[component]
-        filename = os.path.basename(rel_path)
-        category = os.path.dirname(rel_path)
-        roots = [MODELS_PATH]
+        """Find a weight file at its local location (model_kwargs override,
+        comfy layout under MODELS_PATH or a local name_or_path dir), or
+        download it there when (and only when) it is missing — see
+        toolkit/models/v2/resolver.py for the search order."""
         name_or_path = self.model_config.name_or_path
-        if name_or_path and os.path.isdir(name_or_path):
-            roots.append(name_or_path)
-        for root in roots:
-            for rel in (rel_path, filename):
-                candidate = os.path.join(root, rel)
-                if os.path.exists(candidate):
-                    return candidate
-        for root in roots:
-            found = self._find_file_recursive(os.path.join(root, category), filename)
-            if found is not None:
-                return found
-
-        import huggingface_hub
-
-        repo_id = COMFY_REPO
-        if name_or_path and not os.path.exists(name_or_path) and "/" in name_or_path:
-            repo_id = name_or_path
-        self.print_and_status_update(
-            f"Downloading {rel_path} from {repo_id} into {MODELS_PATH}"
+        extra_roots = (
+            [name_or_path] if name_or_path and os.path.isdir(name_or_path) else []
         )
-        return huggingface_hub.hf_hub_download(
-            repo_id=repo_id, filename=rel_path, local_dir=MODELS_PATH
+        return resolve_comfy_file(
+            COMFY_FILES[component],
+            repo_id=repo_id_from_name_or_path(name_or_path, self.comfy_repo),
+            override_path=self.model_config.model_kwargs.get(f"{component}_path", None),
+            extra_roots=extra_roots,
+            status_fn=self.print_and_status_update,
         )
 
     def _dit_component(self) -> str:
@@ -351,277 +303,146 @@ class MinimaxH3Model(BaseModel):
             )
         return f"dit_{partition}"
 
-    @staticmethod
-    def _inspect_frozen_helper_state_dict(state_dict):
-        """Infer an ai-toolkit LoRA/LoKr network from MiniMax-H3 weights."""
-        lora_suffixes = (
-            ".lora_A.weight",
-            ".lora_B.weight",
-            ".lora_down.weight",
-            ".lora_up.weight",
-        )
-        lokr_suffixes = (
-            ".lokr_w1",
-            ".lokr_w2",
-            ".lokr_w2_a",
-            ".lokr_w2_b",
-            ".alpha",
-        )
+    def _resolve_adapter_path(self, adapter_path: str, adapter_kind: str) -> str:
+        """Resolve a MiniMax adapter from a local path, MODELS_PATH/loras, or
+        an ``org/repo/path.safetensors`` Hub reference.
 
-        lora_keys = [
-            key for key in state_dict if key.endswith(lora_suffixes)
-        ]
-        lokr_keys = [
-            key
-            for key in state_dict
-            if ".lokr_" in key or (
-                key.endswith(".alpha")
-                and key.rsplit(".alpha", 1)[0]
-                in {
-                    candidate.split(".lokr_", 1)[0]
-                    for candidate in state_dict
-                    if ".lokr_" in candidate
-                }
-            )
-        ]
-
-        if lora_keys and lokr_keys:
+        Both permanent helper LoRAs and toggleable training adapters use this
+        path policy so a configuration behaves the same whichever role the
+        adapter has.
+        """
+        adapter_path = os.path.expanduser(str(adapter_path).strip())
+        if not adapter_path:
+            raise ValueError(f"{adapter_kind} LoRA path must not be empty")
+        if os.path.isfile(adapter_path):
+            return os.path.realpath(adapter_path)
+        if os.path.exists(adapter_path):
             raise ValueError(
-                "MiniMax-H3 frozen helper cannot mix LoRA and LoKr tensors"
+                f"{adapter_kind} LoRA path is not a file: {adapter_path}"
             )
-        if not lora_keys and not lokr_keys:
+
+        filename = os.path.basename(adapter_path)
+        found = find_file_recursive(os.path.join(MODELS_PATH, "loras"), filename)
+        if found is not None:
+            return os.path.realpath(found)
+
+        parts = adapter_path.split("/")
+        if len(parts) < 3 or not all(parts[:2]) or not filename:
             raise ValueError(
-                "MiniMax-H3 model.lora_path must contain ai-toolkit LoRA or LoKr weights"
+                f"{adapter_kind} LoRA path {adapter_path} is not a local file, "
+                f"a file under {os.path.join(MODELS_PATH, 'loras')}, or an "
+                "'org/repo/path.safetensors' Hub path."
             )
 
-        adapter_type = "lokr" if lokr_keys else "lora"
-        adapter_keys = lokr_keys if lokr_keys else lora_keys
-        unsupported_keys = [
-            key
-            for key in state_dict
-            if key not in adapter_keys
-        ]
-        if unsupported_keys:
-            raise ValueError(
-                "MiniMax-H3 frozen helper contains unsupported tensors: "
-                f"{unsupported_keys[:8]}"
-            )
+        import huggingface_hub
 
-        module_groups = {}
-        for key in adapter_keys:
-            suffix = next(
-                (suffix for suffix in lora_suffixes + lokr_suffixes if key.endswith(suffix)),
-                None,
-            )
-            if suffix is None:
-                raise ValueError(f"Unsupported {adapter_type} tensor key: {key}")
-            module_name = key[: -len(suffix)]
-            if not module_name.startswith("transformer."):
-                raise ValueError(
-                    "MiniMax-H3 frozen helper keys must start with "
-                    f"'diffusion_model.' or 'transformer.': {key}"
-                )
-            module_groups.setdefault(module_name, {})[suffix] = state_dict[key]
-
-        if adapter_type == "lora":
-            ranks = set()
-            for module_name, tensors in module_groups.items():
-                down = tensors.get(".lora_A.weight", tensors.get(".lora_down.weight"))
-                up = tensors.get(".lora_B.weight", tensors.get(".lora_up.weight"))
-                if down is None or up is None:
-                    raise ValueError(
-                        f"Incomplete LoRA tensors for MiniMax-H3 module {module_name}"
-                    )
-                if down.ndim != 2 or up.ndim != 2 or down.shape[0] != up.shape[1]:
-                    raise ValueError(
-                        f"Incompatible LoRA tensor shapes for {module_name}: "
-                        f"down={tuple(down.shape)}, up={tuple(up.shape)}"
-                    )
-                ranks.add(int(down.shape[0]))
-            if len(ranks) != 1:
-                raise ValueError(
-                    f"MiniMax-H3 frozen LoRA must use one rank, found {sorted(ranks)}"
-                )
-            return {
-                "type": "lora",
-                "linear": ranks.pop(),
-                "module_names": sorted(module_groups),
-                "transformer_only": all(
-                    name.startswith("transformer.blocks.") for name in module_groups
-                ),
-            }
-
-        factors = set()
-        ranks = set()
-        alphas = set()
-        full_rank_modes = set()
-        for module_name, tensors in module_groups.items():
-            w1 = tensors.get(".lokr_w1")
-            if w1 is None or w1.ndim != 2:
-                raise ValueError(
-                    f"Unsupported AI Toolkit LoKr w1 layout for {module_name}"
-                )
-            factors.add(int(w1.shape[0]))
-
-            w2 = tensors.get(".lokr_w2")
-            w2_a = tensors.get(".lokr_w2_a")
-            w2_b = tensors.get(".lokr_w2_b")
-            if w2 is not None and w2_a is None and w2_b is None:
-                if w2.ndim != 2:
-                    raise ValueError(
-                        f"Unsupported full-rank LoKr w2 shape for {module_name}: {tuple(w2.shape)}"
-                    )
-                full_rank_modes.add(True)
-            elif w2 is None and w2_a is not None and w2_b is not None:
-                if w2_a.ndim != 2 or w2_b.ndim != 2 or w2_a.shape[1] != w2_b.shape[0]:
-                    raise ValueError(
-                        f"Incompatible factorized LoKr tensors for {module_name}: "
-                        f"w2_a={tuple(w2_a.shape)}, w2_b={tuple(w2_b.shape)}"
-                    )
-                full_rank_modes.add(False)
-                ranks.add(int(w2_a.shape[1]))
-            else:
-                raise ValueError(
-                    f"Incomplete or mixed LoKr w2 tensors for MiniMax-H3 module {module_name}"
-                )
-
-            alpha = tensors.get(".alpha")
-            if alpha is None:
-                raise ValueError(f"Missing LoKr alpha tensor for {module_name}")
-            if alpha.numel() != 1:
-                raise ValueError(f"LoKr alpha must be scalar for {module_name}")
-            alphas.add(float(alpha.item()))
-
-        if len(full_rank_modes) != 1:
-            raise ValueError("MiniMax-H3 frozen LoKr mixes full-rank and factorized modules")
-        full_rank = full_rank_modes.pop()
-        if not full_rank and len(ranks) != 1:
-            raise ValueError(
-                f"MiniMax-H3 frozen LoKr must use one rank, found {sorted(ranks)}"
-            )
-
-        linear = 1 if full_rank else ranks.pop()
-        # AI Toolkit forces full-rank LoKr to an intentionally huge alpha and
-        # later casts metadata tensors to the save dtype; bf16 rounds it and
-        # fp16 may represent it as inf. Its runtime scale is still exactly 1.
-        if not full_rank and alphas != {float(linear)}:
-            raise ValueError(
-                "MiniMax-H3 frozen LoKr uses unsupported alpha scaling: "
-                f"expected {linear}, found {sorted(alphas)}"
-            )
-
-        return {
-            "type": "lokr",
-            "linear": linear,
-            "lokr_full_rank": full_rank,
-            "lokr_factor": max(factors),
-            "module_names": sorted(module_groups),
-            "transformer_only": all(
-                name.startswith("transformer.blocks.") for name in module_groups
-            ),
-        }
-
-    def load_frozen_helper_adapter(self, transformer: MiniMaxH3Transformer):
-        """Fuse one ai-toolkit LoRA/LoKr into the loaded MiniMax-H3 DiT."""
-        from toolkit.config_modules import NetworkConfig
-        from toolkit.lora_special import LoRASpecialNetwork
-
-        helper_path = self.model_config.lora_path
+        subdir = "helper_adapters" if adapter_kind == "Helper" else "training_adapters"
+        target_dir = os.path.join(MODELS_PATH, "loras", subdir)
+        os.makedirs(target_dir, exist_ok=True)
         try:
-            helper_strength = float(
-                getattr(self.model_config, "lora_strength", 1.0)
+            resolved = huggingface_hub.hf_hub_download(
+                repo_id="/".join(parts[:2]),
+                filename="/".join(parts[2:]),
+                local_dir=target_dir,
             )
-        except (TypeError, ValueError) as exc:
+        except Exception as e:
             raise ValueError(
-                "MiniMax-H3 model.lora_strength must be a finite number"
-            ) from exc
-        if not math.isfinite(helper_strength):
+                f"Failed to download {adapter_kind.lower()} LoRA from "
+                f"{adapter_path}: {e}"
+            ) from e
+        return os.path.realpath(resolved)
+
+    def _resolve_helper_lora(self):
+        """Return ``(path, strength, identity)`` or ``(None, 0, None)``.
+
+        Strength zero is an explicit disable switch and deliberately avoids
+        path resolution/downloads.
+        """
+        path = self.model_config.helper_lora_path
+        strength = float(self.model_config.helper_lora_strength)
+        if not math.isfinite(strength):
+            raise ValueError("helper_lora_strength must be a finite number")
+        if path is None or not str(path).strip() or strength == 0.0:
+            return None, 0.0, None
+        path = self._resolve_adapter_path(path, "Helper")
+        self.model_config.helper_lora_path = path
+        identity = f"{path}@{strength:.17g}"
+        return path, strength, identity
+
+    @staticmethod
+    def _evict_incompatible_helper_transformers(helper_identity):
+        """Prevent a helper-mutated transformer from crossing pool identities."""
+        from toolkit.models.v2.pool import ComponentPool
+
+        pool = ComponentPool.current
+        if pool is None:
+            return 0
+        return pool.evict_where(
+            lambda module: isinstance(module, MiniMaxH3Transformer)
+            and getattr(module, "_aitk_helper_lora", None) != helper_identity
+        )
+
+    def _merge_helper_lora(
+        self,
+        transformer: MiniMaxH3Transformer,
+        helper_path: str,
+        helper_strength: float,
+        helper_identity: str,
+    ):
+        """Permanently merge the helper into this in-memory transformer."""
+        from toolkit.inference_lora import InferenceLoRA
+
+        if getattr(transformer, "_aitk_helper_lora", None) == helper_identity:
+            self.print_and_status_update("Reusing transformer with helper LoRA merged")
+            return
+
+        self.print_and_status_update(
+            f"Merging helper LoRA at strength {helper_strength:g}"
+        )
+        # InferenceLoRA discovers its DiT through holder.model. Assigning the
+        # freshly loaded transformer here also makes the holder state truthful
+        # during the rest of the load sequence.
+        self.model = transformer
+        helper = InferenceLoRA(helper_path, strength=helper_strength).load(self)
+        if not helper.entries:
             raise ValueError(
-                "MiniMax-H3 model.lora_strength must be a finite number"
+                f"Helper LoRA {helper_path} matched no MiniMax-H3 transformer modules "
+                f"(unmatched: {helper.unmatched[:3]})"
             )
-        if not os.path.isfile(helper_path):
-            raise FileNotFoundError(
-                f"MiniMax-H3 model.lora_path must be a local file: {helper_path}"
-            )
-        if os.path.splitext(helper_path)[1].lower() != ".safetensors":
-            raise ValueError(
-                "MiniMax-H3 model.lora_path must be an ai-toolkit .safetensors adapter"
+        if helper.unmatched:
+            preview = ", ".join(helper.unmatched[:3])
+            suffix = " ..." if len(helper.unmatched) > 3 else ""
+            self.print_and_status_update(
+                f"Helper LoRA: {len(helper.entries)} modules matched, "
+                f"{len(helper.unmatched)} unmatched ({preview}{suffix})"
             )
 
-        raw_state_dict = load_file(helper_path)
-        normalized_state_dict = self.convert_lora_weights_before_load(raw_state_dict)
-        helper_info = self._inspect_frozen_helper_state_dict(normalized_state_dict)
-
-        network_config = NetworkConfig(
-            **{
-                "type": helper_info["type"],
-                "linear": helper_info["linear"],
-                "linear_alpha": helper_info["linear"],
-                "transformer_only": helper_info["transformer_only"],
-                "lokr_full_rank": helper_info.get("lokr_full_rank", True),
-                "lokr_factor": helper_info.get("lokr_factor", -1),
+        cuda_devices = sorted(
+            {
+                weight.device.index
+                for entry in helper.entries
+                for weight in [getattr(entry.module, "weight", None)]
+                if isinstance(weight, torch.Tensor)
+                and weight.device.type == "cuda"
+                and weight.device.index is not None
             }
         )
-        network = LoRASpecialNetwork(
-            text_encoder=None,
-            unet=transformer,
-            lora_dim=network_config.linear,
-            # The temporary network is never applied to a forward pass; the
-            # configured helper strength is applied exactly once by merge_in.
-            multiplier=1.0,
-            alpha=network_config.linear_alpha,
-            train_unet=True,
-            train_text_encoder=False,
-            network_config=network_config,
-            network_type=network_config.type,
-            transformer_only=network_config.transformer_only,
-            is_transformer=True,
-            target_lin_modules=self.target_lora_modules,
-            only_if_contains=helper_info["module_names"],
-            base_model=self,
+        # Stochastic rounding keeps small deltas alive on the stored ConvRot
+        # grid. Isolate and seed its RNG so model loading is reproducible and
+        # does not perturb training/sample RNG state.
+        with torch.random.fork_rng(devices=cuda_devices, enabled=True):
+            torch.manual_seed(HELPER_LORA_MERGE_SEED)
+            if cuda_devices:
+                torch.cuda.manual_seed_all(HELPER_LORA_MERGE_SEED)
+            merged = helper.merge(stochastic=True)
+        if merged == 0:
+            raise ValueError(
+                f"Helper LoRA {helper_path} matched modules but merged no weights"
+            )
+        transformer._aitk_helper_lora = helper_identity
+        self.print_and_status_update(
+            f"Merged helper LoRA into {merged} transformer modules"
         )
-
-        # LoRANetwork.apply_to() normally both registers these modules and
-        # patches the model forwards. Frozen helpers need registration for
-        # strict state-dict loading, but must never install live wrappers.
-        for helper_module in network.get_all_modules():
-            network.add_module(helper_module.lora_name, helper_module)
-
-        module_count = len(network.get_all_modules())
-        expected_count = len(helper_info["module_names"])
-        if module_count != expected_count:
-            raise ValueError(
-                "MiniMax-H3 frozen helper module mismatch: "
-                f"checkpoint has {expected_count}, model matched {module_count}"
-            )
-
-        extra_weights = network.load_weights(raw_state_dict, strict=True)
-        if extra_weights:
-            raise ValueError(
-                "MiniMax-H3 frozen helper contains unmatched weights: "
-                f"{list(extra_weights)[:8]}"
-            )
-
-        # The temporary network is never applied to model forwards. Its modules
-        # only reconstruct and merge their deltas, so it cannot leak into the
-        # optimizer, validation toggles, or the newly saved training adapter.
-        if helper_strength == 0.0:
-            # Avoid a no-op dequantize/requantize cycle, which is lossy for an
-            # already quantized transformer even though the delta is zero.
-            self.print_and_status_update(
-                f"Loaded frozen helper {helper_info['type'].upper()} from "
-                f"{helper_path} at strength 0; merge skipped for "
-                f"{module_count} modules"
-            )
-        else:
-            network.merge_in(merge_weight=helper_strength)
-            self.print_and_status_update(
-                f"Fused frozen helper {helper_info['type'].upper()} from "
-                f"{helper_path} at strength {helper_strength:g} into "
-                f"{module_count} modules"
-            )
-        del network, raw_state_dict, normalized_state_dict
-        flush()
 
     def load_training_adapter(self, transformer: MiniMaxH3Transformer):
         """Load an assistant LoRA (e.g. a de-distillation adapter) as a LIVE
@@ -631,44 +452,17 @@ class MinimaxH3Model(BaseModel):
 
         Path resolution: a local path is used as-is; otherwise the loras
         folder under MODELS_PATH is searched recursively for the filename;
-        otherwise a ``user/repo/file.safetensors`` hub path downloads into
+        otherwise an ``org/repo/path.safetensors`` Hub path downloads into
         MODELS_PATH/loras/training_adapters/.
         """
         from toolkit.config_modules import NetworkConfig
         from toolkit.lora_special import LoRASpecialNetwork
 
         self.print_and_status_update("Loading assistant LoRA")
-        lora_path = self.model_config.assistant_lora_path
-        if not os.path.exists(lora_path):
-            filename = os.path.basename(lora_path)
-            found = self._find_file_recursive(
-                os.path.join(MODELS_PATH, "loras"), filename
-            )
-            if found is not None:
-                lora_path = found
-            else:
-                lora_splits = lora_path.split("/")
-                if len(lora_splits) != 3:
-                    raise ValueError(
-                        f"Assistant LoRA path {lora_path} is not a local path, a "
-                        f"file under {os.path.join(MODELS_PATH, 'loras')}, or a "
-                        "'user/repo/file.safetensors' hub path."
-                    )
-                import huggingface_hub
-
-                target_dir = os.path.join(MODELS_PATH, "loras", "training_adapters")
-                os.makedirs(target_dir, exist_ok=True)
-                try:
-                    lora_path = huggingface_hub.hf_hub_download(
-                        repo_id="/".join(lora_splits[:2]),
-                        filename=lora_splits[2],
-                        local_dir=target_dir,
-                    )
-                except Exception as e:
-                    raise ValueError(
-                        f"Failed to download assistant LoRA from {lora_path}: {e}"
-                    )
-            self.model_config.assistant_lora_path = lora_path
+        lora_path = self._resolve_adapter_path(
+            self.model_config.assistant_lora_path, "Assistant"
+        )
+        self.model_config.assistant_lora_path = lora_path
 
         # load the adapter; it stays a live module (never merged) and the
         # sampler toggles it off for previews
@@ -728,46 +522,12 @@ class MinimaxH3Model(BaseModel):
         self.invert_assistant_lora = False
 
     def _load_transformer(self) -> MiniMaxH3Transformer:
-        dtype = self.torch_dtype
         dit_path = self._resolve_comfy_file(self._dit_component())
         self.print_and_status_update(f"Loading transformer from {dit_path}")
-        state_dict = load_file(dit_path)
-
-        params = MiniMaxH3TransformerParams()
-        table = state_dict.get("adaln_t_table", None)
-        if table is not None:
-            # pruned checkpoint: factored timestep table instead of the MLP
-            params.adaln_t_table_size = table.shape[0]
-            params.time_embed_dim = table.shape[1]
-
-        with torch.device("meta"):
-            transformer = MiniMaxH3Transformer(params)
-
-        # attach the pre-quantized (int8 ConvRot) linears onto the toolkit's
-        # quantization backends; the rest loads at its stored precision (the
-        # checkpoint's bf16/fp16/fp32 mix is deliberate)
-        state_dict, num_quantized = import_comfy_quantized_layers(
-            transformer, state_dict, orig_dtype=dtype
-        )
-        if num_quantized:
-            self.print_and_status_update(
-                f" - attached {num_quantized} pre-quantized ConvRot layers"
-            )
-        result = transformer.load_state_dict(state_dict, assign=True, strict=False)
-        quantized_weight_keys = {
-            f"{name}.weight"
-            for name, m in transformer.named_modules()
-            if isinstance(m, OstrisLinear)
-        }
-        bad_missing = [k for k in result.missing_keys if k not in quantized_weight_keys]
-        if bad_missing or result.unexpected_keys:
-            raise ValueError(
-                f"MiniMax-H3 transformer load mismatch: missing {bad_missing[:8]}, "
-                f"unexpected {result.unexpected_keys[:8]}"
-            )
-        del state_dict
-        flush()
-        return transformer
+        # the mixin single-file path: config sniffed from the checkpoint
+        # (adaln_t_table), pre-quantized ConvRot linears attached, everything
+        # else at its stored precision (the bf16/fp16/fp32 mix is deliberate)
+        return MiniMaxH3Transformer.load_model(dit_path, dtype=self.torch_dtype)
 
     def _load_text_encoder(self):
         from accelerate import init_empty_weights
@@ -793,7 +553,7 @@ class MinimaxH3Model(BaseModel):
             )
             config = AutoConfig.from_pretrained(te_path)
             config.text_config.num_hidden_layers = TEXT_ENCODER_LAYER
-            text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
+            text_encoder = Qwen3VLTextEncoder.from_pretrained(
                 te_path, config=config, torch_dtype=self.te_torch_dtype
             )
         else:
@@ -815,7 +575,7 @@ class MinimaxH3Model(BaseModel):
             config.text_config.num_hidden_layers = TEXT_ENCODER_LAYER
             config.tie_word_embeddings = False
             with init_empty_weights():
-                text_encoder = Qwen3VLForConditionalGeneration(config)
+                text_encoder = Qwen3VLTextEncoder(config)
             text_encoder.lm_head = None
 
             state_dict = load_file(te_file)
@@ -870,38 +630,9 @@ class MinimaxH3Model(BaseModel):
 
     def _load_vaes(self) -> MiniMaxH3VaeBundle:
         self.print_and_status_update("Loading video VAE")
-        video_sd = load_file(self._resolve_comfy_file("video_vae"))
-        # normalization stats ride along in the comfy file; the module holds
-        # them as non-persistent buffers, keep them float32
-        video_stats = {
-            k: video_sd.pop(k).float()
-            for k in ("latents_mean", "latents_std")
-            if k in video_sd
-        }
-        video_vae = MiniMaxH3VideoVAE()
-        video_vae.load_state_dict(video_sd, strict=True, assign=True)
-        for k, v in video_stats.items():
-            getattr(video_vae, k).copy_(v)
-        video_vae.eval().requires_grad_(False)
-        del video_sd
-
+        video_vae = MiniMaxH3VideoVAE.load_model(self._resolve_comfy_file("video_vae"))
         self.print_and_status_update("Loading audio VAE")
-        audio_sd = load_file(self._resolve_comfy_file("audio_vae"))
-        audio_stats = {
-            k: audio_sd.pop(k).float()
-            for k in ("latents_mean", "latents_std")
-            if k in audio_sd
-        }
-        # comfy repack ships the weight norm already folded; fold only if the
-        # raw parametrization is present (original-repo file)
-        if any(k.endswith("weight_g") for k in audio_sd.keys()):
-            audio_sd = fold_audio_vae_weight_norm(audio_sd)
-        audio_vae = MiniMaxH3AudioVAE()
-        audio_vae.load_state_dict(audio_sd, strict=True, assign=True)
-        for k, v in audio_stats.items():
-            getattr(audio_vae, k).copy_(v)
-        audio_vae.to(torch.float32).eval().requires_grad_(False)
-        del audio_sd
+        audio_vae = MiniMaxH3AudioVAE.load_model(self._resolve_comfy_file("audio_vae"))
         flush()
         return MiniMaxH3VaeBundle(video_vae, audio_vae)
 
@@ -913,71 +644,42 @@ class MinimaxH3Model(BaseModel):
             f"audio={self.audio_flow_shift:g}"
         )
 
+        helper_path, helper_strength, helper_identity = self._resolve_helper_lora()
+        freed = self._evict_incompatible_helper_transformers(helper_identity)
+        if freed:
+            self.print_and_status_update(
+                "Reloading pooled MiniMax-H3 transformer for a different helper LoRA"
+            )
+
         transformer = self._load_transformer()
+        self.model = transformer
 
-        # A concept helper is permanently fused before live training adapters,
-        # additional quantization, offloading, and the new trainable network.
-        if self.model_config.lora_path is not None:
-            self.load_frozen_helper_adapter(transformer)
+        if helper_path is not None:
+            self._merge_helper_lora(
+                transformer, helper_path, helper_strength, helper_identity
+            )
 
-        # load assistant lora if specified (kept live and toggled for sampling)
+        # The optional training adapter remains live and toggleable. It is
+        # loaded after the permanent helper so both can coexist.
         if self.model_config.assistant_lora_path is not None:
             self.load_training_adapter(transformer)
 
-        if self.model_config.quantize:
-            self.print_and_status_update("Quantizing transformer")
-            quantize_model(self, transformer)
-            flush()
-
-        if (
-            self.model_config.layer_offloading
-            and self.model_config.layer_offloading_transformer_percent > 0
-        ):
-            MemoryManager.attach(
-                transformer,
-                self.device_torch,
-                offload_percent=self.model_config.layer_offloading_transformer_percent,
-            )
-
-        if self.model_config.low_vram:
-            self.print_and_status_update("Keeping transformer on CPU")
-            transformer.to("cpu")
-        else:
-            transformer.to(self.device_torch)
+        # quantize + offload + placement, all driven by model_config
+        transformer.aitk_post_load(**self.component_load_kwargs("transformer"))
         flush()
 
         tokenizer, processor, text_encoder = self._load_text_encoder()
-        te_prequantized = any(
-            isinstance(m, OstrisLinear) for m in text_encoder.modules()
-        )
-        if self.model_config.quantize_te and not te_prequantized:
-            self.print_and_status_update("Quantizing text encoder")
-            quantize(text_encoder, weights=get_qtype(self.model_config.qtype_te))
-            freeze(text_encoder)
-            flush()
-        elif self.model_config.quantize_te:
-            self.print_and_status_update(
-                "Text encoder is already nvfp4/int8 quantized; skipping quantize_te"
-            )
-        if (
-            self.model_config.layer_offloading
-            and self.model_config.layer_offloading_text_encoder_percent > 0
-        ):
-            MemoryManager.attach(
-                text_encoder,
-                self.device_torch,
-                offload_percent=self.model_config.layer_offloading_text_encoder_percent,
-            )
-        if self.model_config.low_vram:
-            text_encoder.to("cpu")
-        else:
-            text_encoder.to(self.device_torch)
+        if any(isinstance(m, OstrisLinear) for m in text_encoder.modules()):
+            # already nvfp4/int8 quantized; aitk_post_load skips quantize_te
+            text_encoder.aitk_is_quantized = True
+        # quantize + offload + placement, all driven by model_config
+        text_encoder.aitk_post_load(**self.component_load_kwargs("te"))
         flush()
 
         vae_bundle = self._load_vaes()
         vae_bundle.to(self.vae_device_torch)
 
-        self.noise_scheduler = MinimaxH3Model.get_train_scheduler(self.flow_shift)
+        self.noise_scheduler = self.get_train_scheduler()
         self.vae = vae_bundle
         self.text_encoder = text_encoder
         self.tokenizer = tokenizer
@@ -1242,17 +944,6 @@ class MinimaxH3Model(BaseModel):
         if self.model.device == torch.device("cpu"):
             self.model.to(device)
 
-        # a grad-enabled prediction is the primary (loss carrying) one unless
-        # the trainer declared a secondary slot on the batch (prior /
-        # guidance-unconditional / preservation passes). Trainers that make
-        # several grad predictions per step (e.g. turbo rollouts) get one
-        # primary per prediction, last writer wins.
-        is_primary_pred = (
-            torch.is_grad_enabled()
-            and batch is not None
-            and batch.audio_pred_slot is None
-        )
-
         batch_size, _, t_lat, h_lat, w_lat = latent_model_input.shape
 
         with torch.no_grad():
@@ -1261,7 +952,9 @@ class MinimaxH3Model(BaseModel):
                 sigma_v = sigma_v.unsqueeze(0)
             if sigma_v.shape[0] != batch_size:
                 sigma_v = sigma_v.expand(batch_size)
-            sigma_a = self.remap_audio_sigma(sigma_v)
+            sigma_a = remap_sigma(
+                sigma_v, self.video_sigma_shift, packing.AUDIO_SIGMA_SHIFT
+            )
             t_v = 1.0 - sigma_v
             t_a = 1.0 - sigma_a
 
@@ -1299,6 +992,8 @@ class MinimaxH3Model(BaseModel):
                 )
 
             sa = sigma_a.view(-1, 1, 1)
+            audio_target = None
+            noisy_audio_rows = None
             if raw_audio is not None:
                 expected_rows = a_lat * packing.AUDIO_CHANNELS
                 if raw_audio.shape[1] > expected_rows:
@@ -1309,31 +1004,29 @@ class MinimaxH3Model(BaseModel):
                     )
                 # the audio noise is drawn once per step and shared by every
                 # pass (prior, primary, cfg/guidance, preservation) so they all
-                # see the same soundtrack and the stored target keeps matching
-                if (
-                    batch.audio_noise is not None
-                    and batch.audio_noise.shape == raw_audio.shape
-                ):
-                    audio_noise = batch.audio_noise.to(device, torch.float32)
+                # see the same soundtrack and every pass's target matches. It
+                # rides on the latents DTO along with the trimmed audio so
+                # on-the-fly encodes aren't repeated per pass.
+                audio_noise = (
+                    batch.latents.get("audio_noise")
+                    if isinstance(batch.latents, DTO)
+                    else None
+                )
+                if audio_noise is not None and audio_noise.shape == raw_audio.shape:
+                    audio_noise = audio_noise.to(device, torch.float32)
                 else:
                     audio_noise = torch.randn_like(raw_audio)
-                    batch.audio_noise = audio_noise
+                    if batch.latents is not None:
+                        batch.latents = DTO(
+                            batch.latents, audio=raw_audio, audio_noise=audio_noise
+                        )
                 audio_rows = (1.0 - sa) * raw_audio + sa * audio_noise
-                batch.audio_latents = raw_audio
-                if batch.audio_target is None:
-                    # model predicts clean - noise; audio_pred is negated below
-                    # so the stored target follows ai-toolkit's noise - clean.
-                    # With the shared noise this is the same value on every
-                    # pass, so first writer is fine (and it keeps a guidance
-                    # extrapolated target from being overwritten).
-                    batch.audio_target = (audio_noise - raw_audio).detach()
-                if is_primary_pred:
-                    # expose what audio perceptual losses need to rebuild the
-                    # clean estimate (x0 = noisy - sigma_a * pred). Tied to the
-                    # primary pass so they always match audio_pred, even when a
-                    # trainer makes primary predictions at several sigmas.
-                    batch.audio_noisy = audio_rows
-                    batch.audio_sigma = sigma_a
+                # model predicts clean - noise; audio_pred is negated below so
+                # the target follows ai-toolkit's noise - clean convention
+                audio_target = (audio_noise - raw_audio).detach()
+                # what audio perceptual losses need to rebuild the clean
+                # estimate (x0 = noisy - sigma_a * pred); rides the pred DTO
+                noisy_audio_rows = audio_rows
             else:
                 # no soundtrack: silence (zeros) noised at the audio sigma
                 # rides along without contributing to the loss
@@ -1422,20 +1115,26 @@ class MinimaxH3Model(BaseModel):
             video_indices=video_indices.to(device),
             audio_indices=audio_indices.to(device),
             text_indices=text_indices.to(device),
+            # target-video token grid (patch 1x2x2); consumed only by VSA models
+            vsa_video_grid=(t_lat, h_lat // 2, w_lat // 2),
         )
 
         if num_cond_audio > 0:
             # reference soundtrack rows are conditioning, not targets
             audio_pred = audio_pred[:, num_cond_audio:]
-        if batch is not None and batch.audio_target is not None:
-            # flip to ai-toolkit's noise - clean convention
-            if is_primary_pred:
-                batch.audio_pred = -audio_pred
-            else:
-                batch.set_secondary_audio_pred(-audio_pred)
 
         video_pred = video_pred[:, num_cond:]
         noise_pred = unpatchify_video_tokens(video_pred, t_lat, h_lat, w_lat)
+        if audio_target is not None:
+            # every pass's DTO carries its own audio stream; preds flipped to
+            # ai-toolkit's noise - clean convention
+            return DTO(
+                -noise_pred,
+                audio=-audio_pred,
+                audio_target=audio_target,
+                audio_noisy=noisy_audio_rows,
+                audio_sigma=sigma_a,
+            )
         return -noise_pred
 
     def get_loss_target(self, *args, **kwargs):
@@ -1554,19 +1253,9 @@ class MinimaxH3Model(BaseModel):
             "*adaln_proj*",
         ]
 
-    def convert_lora_weights_before_save(self, state_dict):
-        # ComfyUI's MiniMax-H3 keys are the original checkpoint keys, so the
-        # standard diffusion_model prefix maps directly
-        return {
-            k.replace("transformer.", "diffusion_model."): v
-            for k, v in state_dict.items()
-        }
-
-    def convert_lora_weights_before_load(self, state_dict):
-        return {
-            k.replace("diffusion_model.", "transformer."): v
-            for k, v in state_dict.items()
-        }
+    # ComfyUI's MiniMax-H3 keys are the original checkpoint keys, so the
+    # standard diffusion_model prefix maps directly
+    lora_keys_use_comfy_prefix = True
 
 
 class MinimaxH3Ref2VAModel(MinimaxH3Model):
@@ -1625,6 +1314,15 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         # control VIDEOS are cached like dataset items and consumed as
         # multi-frame reference blocks
         self.supports_video_control_images = True
+        # D-OPSD: a no-grad teacher pass with the target as its own reference
+        # becomes the training target for the reference-free student pass
+        self.dopsd = bool(self.model_config.model_kwargs.get("dopsd", False))
+        if self.dopsd:
+            self.dopsd_self_ref = True
+            self.require_pixel_tensor_cache = True
+            self.dopsd_bleed_strength = float(
+                self.model_config.model_kwargs.get("dopsd_bleed_strength", 1.0)
+            )
 
     def _dit_component(self) -> str:
         partition = str(
@@ -1647,6 +1345,10 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         # pixel area with its own aspect kept, then encoded on its own grid
         if batch is None:
             return None, None, (), ()
+        if getattr(batch, "dopsd_teacher_pass", False):
+            return self._build_dopsd_teacher_condition(
+                batch, latent_shape, device, dtype
+            )
         controls_per_item = None
         if batch.control_tensor_list is not None:
             controls_per_item = batch.control_tensor_list
@@ -1727,6 +1429,54 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
             return None, None, (), ()
         cond_audio = torch.cat(audio_rows, dim=1) if audio_rows else None
         return torch.cat(all_rows, dim=1), cond_audio, (), tuple(blocks)
+
+    def _build_dopsd_teacher_condition(self, batch, latent_shape, device, dtype):
+        """D-OPSD teacher: the target is its own (only) reference, built from
+        the batch's cached pixel tensors; its soundtrack rides as clean
+        reference audio rows."""
+        if batch.tensor is None:
+            raise ValueError(
+                "D-OPSD teacher pass needs pixel tensors on the batch; set "
+                "cache_tensors_to_disk: true on this dataset"
+            )
+        px = batch.tensor.detach().to(device, torch.float32)
+        if px.ndim == 4:
+            # image items: single-frame ref, or a static clip for image_refs_as_video
+            frames = px.unsqueeze(2)
+            as_video_frames = self._image_ref_video_frames()
+            if as_video_frames:
+                frames = frames.expand(-1, -1, as_video_frames, -1, -1).contiguous()
+        else:
+            # video items: (B, T, C, H, W) -> (B, C, T, H, W)
+            frames = px.permute(0, 2, 1, 3, 4).contiguous()
+        ref_latents = self.encode_keyframe_latents(frames)
+        ref_noise = torch.randn_like(ref_latents)
+        ref_latents = (
+            KEYFRAME_NOISE_AUG_T * ref_latents
+            + (1.0 - KEYFRAME_NOISE_AUG_T) * ref_noise
+        )
+        audio_rows = None
+        a_lat = 0
+        if (
+            batch.dataset_config is not None
+            and batch.dataset_config.do_audio
+            and batch.audio_latents is not None
+            and getattr(batch, "num_frames", 1) > 1
+        ):
+            a_lat = packing.audio_latent_num_frames(batch.num_frames)
+            audio_rows = torch.stack(
+                [
+                    self._fit_audio_rows(
+                        batch.audio_latents[b].detach().to(device, torch.float32),
+                        a_lat,
+                    )
+                    for b in range(batch.audio_latents.shape[0])
+                ]
+            ).to(dtype)
+        blocks = (
+            (ref_latents.shape[2], ref_latents.shape[3], ref_latents.shape[4], a_lat),
+        )
+        return patchify_video_latents(ref_latents).to(dtype), audio_rows, (), blocks
 
     @torch.no_grad()
     def _encode_ref_video_for_sampling(self, path: str, gen_config) -> torch.Tensor:
@@ -1965,3 +1715,76 @@ class MinimaxH3Ref2VAModel(MinimaxH3Model):
         if is_video:
             return result  # dict consumed by new_save_image_function
         return result[0]
+
+
+class MinimaxH3FastModel(MinimaxH3Model):
+    """FastH3 8-Step V2: FastVideo's DMD2-distilled 8-step MiniMax-H3, trained
+    with VSA (Video Sparse Attention) at 80% sparsity and a video flow shift of
+    10 (audio stays at 3). Text-to-video(+audio) only — no first-frame or
+    reference conditioning.
+
+    Weights come from ``FASTH3_REPO``. The DiT is its int8-ConvRot repack:
+    the pruned comfy layout plus a ``blocks.N.attn.to_gate_compress`` linear
+    per block. Attention runs
+    the trained VSA policy — pooled 64-token (4,4,4) tile top-k block-sparse
+    attention with the gated compression branch — via FlexAttention
+    (src/vsa.py), in training and sampling alike. Text encoder and VAEs are
+    the base model's files, repacked in the same repo.
+
+    ``model_kwargs``:
+      - ``vsa`` (default true): false runs dense attention with the gate
+        branch off, matching FastVideo's dense LoRA-preview mode
+      - ``vsa_sparsity`` (default 0.8, the checkpoint's trained policy)
+
+    Sample with 8 steps (the distilled schedule) and guidance_scale 1.
+    """
+
+    arch = "minimax_h3_vsa"
+    video_sigma_shift = 10.0
+    comfy_repo = FASTH3_REPO
+    # FastH3 samples on its trained ladder: [999, 874, ..., 250, 125] on the
+    # shared 1000-step grid, each scheduler applying its own shift
+    t1000_sample_ladder = True
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if (
+            self.model_config.helper_lora_path
+            and self.model_config.helper_lora_strength != 0.0
+        ):
+            raise ValueError(
+                "helper_lora_path is supported by minimax_h3 and "
+                "minimax_h3_ref2va, but not minimax_h3_vsa/FastH3"
+            )
+        kw = self.model_config.model_kwargs
+        self.vsa_sparsity: Optional[float] = None
+        if bool(kw.get("vsa", True)):
+            self.vsa_sparsity = float(kw.get("vsa_sparsity", 0.8))
+
+    def _dit_component(self) -> str:
+        return "dit_fasth3"
+
+    def _load_transformer(self) -> MiniMaxH3Transformer:
+        transformer = super()._load_transformer()
+        if not transformer.params.gate_compress:
+            raise ValueError(
+                "minimax_h3_vsa needs a VSA-trained checkpoint with "
+                "blocks.N.attn.to_gate_compress weights (FastH3); this file "
+                "has none. Use arch minimax_h3 for the base checkpoints."
+            )
+        transformer.vsa_sparsity = self.vsa_sparsity
+        return transformer
+
+    def _build_condition(
+        self, batch: "DataLoaderBatchDTO", latent_shape, device, dtype
+    ):
+        # t2v only: no keyframe or reference conditioning
+        return None, None, (), ()
+
+    def get_base_model_version(self):
+        return "minimax_h3_vsa"
+
+    @property
+    def text_embedding_space_version(self):
+        # same Qwen3-VL presentation as the base model: share the embed cache
+        return "minimax_h3"

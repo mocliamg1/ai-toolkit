@@ -288,6 +288,30 @@ const docs: { [key: string]: ConfigDoc } = {
       </>
     ),
   },
+  'train.pool_datasets': {
+    title: 'Pool Datasets',
+    description: (
+      <>
+        Off by default. Only useful when you have numerous datasets.
+        <br />
+        <br />
+        Normally every dataset is loaded as its own unit with its own buckets, so each batch is built from a single
+        dataset and each dataset keeps its own loader threads. With many datasets this means batches never mix images
+        from different folders and the number of loader threads grows with the dataset count.
+        <br />
+        <br />
+        Pooling merges all of your datasets into one shared set of buckets. Images from different folders that land in
+        the same bucket are mixed together in the same batch, and only one set of loader threads is used for the whole
+        pool. Regularization datasets are pooled separately from your training datasets, never together.
+        <br />
+        <br />
+        Each dataset keeps its own settings (captions, control images, repeats, flips, scale, resolution). Datasets whose
+        settings would not collate into one batch (for example a different number of control images, video vs image,
+        or different caching) are automatically kept in separate buckets within the pool. All pooled datasets must use
+        the same batch size.
+      </>
+    ),
+  },
   'train.do_differential_guidance': {
     title: 'Differential Guidance',
     description: (
@@ -373,6 +397,27 @@ const docs: { [key: string]: ConfigDoc } = {
         on a fixed num_frames. This allows you to include videos of different lengths in the dataset, and each video
         will be processed without speeding up or slowing down. Be careful about adding long videos into your dataset, as
         they use up more VRAM. This currently will not work with a batch size greater than 1.
+      </>
+    ),
+  },
+  'datasets.max_frames': {
+    title: 'Max Frames',
+    description: (
+      <>
+        The maximum number of frames Auto Frame Count will use for a single video. Videos longer than this are trimmed
+        from the start at the dataset FPS, so they keep their real speed instead of being sped up to fit. The final
+        count is snapped down to a frame count the model supports. Leave empty for no limit. Useful to keep VRAM usage
+        in check when the dataset contains long videos.
+      </>
+    ),
+  },
+  'model.model_kwargs.instruction': {
+    title: 'LLM Prompt',
+    description: (
+      <>
+        The instruction the model is asked for every training item, as the user turn of the chat. The item's caption
+        file is the answer it learns to give. Use the same wording when running the trained LoRA, and it is also what
+        samples use when their own prompt is left blank.
       </>
     ),
   },
