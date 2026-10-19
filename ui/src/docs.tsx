@@ -353,6 +353,42 @@ const docs: { [key: string]: ConfigDoc } = {
       </>
     ),
   },
+  'model.lora_path': {
+    title: 'Frozen Helper Adapter',
+    description: (
+      <>
+        A local AI Toolkit LoRA or LoKr safetensors file to fuse into MiniMax H3 before the new trainable adapter is
+        created. The helper stays active during training and validation, but is not included in the newly saved adapter.
+      </>
+    ),
+  },
+  'model.lora_strength': {
+    title: 'Frozen Helper Strength',
+    description: (
+      <>
+        Scales the frozen helper delta as it is fused into MiniMax H3. Use 1.0 for its original strength, values between
+        0 and 1 for a weaker effect, values above 1 for a stronger effect, or a negative value to subtract it.
+      </>
+    ),
+  },
+  'model.flow_shift': {
+    title: 'Video Flow Shift',
+    description: (
+      <>
+        Exponential sigma shift for MiniMax H3 video training and validation sampling. The released checkpoint uses
+        12.0. This setting affects shifted timestep training; keep Timestep Type set to Shift.
+      </>
+    ),
+  },
+  'model.audio_flow_shift': {
+    title: 'Audio Flow Shift',
+    description: (
+      <>
+        Independent exponential sigma shift for MiniMax H3 audio. The released checkpoint uses 3.0. Audio sigmas are
+        derived from the same underlying schedule position as video so changing either value keeps both streams aligned.
+      </>
+    ),
+  },
   'datasets.auto_frame_count': {
     title: 'Auto Frame Count',
     description: (

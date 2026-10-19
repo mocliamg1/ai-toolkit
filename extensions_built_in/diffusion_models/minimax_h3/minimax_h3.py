@@ -107,6 +107,22 @@ scheduler_config = {
     "use_dynamic_shifting": False,
 }
 
+
+def _resolve_flow_shift(value, default: float, config_name: str) -> float:
+    if value is None:
+        value = default
+    try:
+        shift = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"MiniMax-H3 model.{config_name} must be a finite number greater than 0"
+        ) from exc
+    if not math.isfinite(shift) or shift <= 0:
+        raise ValueError(
+            f"MiniMax-H3 model.{config_name} must be a finite number greater than 0"
+        )
+    return shift
+
 # Comfy-Org repack of the released weights, at ComfyUI's repo-relative paths
 # under MODELS_PATH (diffusion_models/, text_encoders/, vae/). Files are used
 # in place when present and downloaded to exactly these locations only when
@@ -216,6 +232,16 @@ class MinimaxH3Model(BaseModel):
         # stack has no limit — set 0 to disable
         self.max_text_length = int(
             self.model_config.model_kwargs.get("max_text_length", 512)
+        )
+        self.flow_shift = _resolve_flow_shift(
+            getattr(self.model_config, "flow_shift", None),
+            packing.VIDEO_SIGMA_SHIFT,
+            "flow_shift",
+        )
+        self.audio_flow_shift = _resolve_flow_shift(
+            getattr(self.model_config, "audio_flow_shift", None),
+            packing.AUDIO_SIGMA_SHIFT,
+            "audio_flow_shift",
         )
 
     @classmethod
@@ -613,6 +639,10 @@ class MinimaxH3Model(BaseModel):
     def load_model(self):
         dtype = self.torch_dtype
         self.print_and_status_update("Loading MiniMax-H3 model")
+        self.print_and_status_update(
+            f"MiniMax-H3 flow shifts: video={self.flow_shift:g}, "
+            f"audio={self.audio_flow_shift:g}"
+        )
 
         helper_path, helper_strength, helper_identity = self._resolve_helper_lora()
         freed = self._evict_incompatible_helper_transformers(helper_identity)
