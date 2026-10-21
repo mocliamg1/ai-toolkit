@@ -256,6 +256,7 @@ class MossImageModel(BaseModel):
                 qtype=te_kwargs["qtype"],
                 hf_token=HF_TOKEN,
                 status_fn=self.print_and_status_update,
+                repo_id=self.model_config.name_or_path,
             )
         elif te_path.endswith(".safetensors"):
             te_path = resolve_hub_file(

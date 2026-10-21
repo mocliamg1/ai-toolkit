@@ -3,12 +3,12 @@
 Weights live in the ComfyUI layout under MODELS_PATH, named like the
 Comfy-Org/MOSS-Image repack (DiT: the vendor's keys with q/k/v fused).
 
-- ``OpenMOSS-Team/MOSS-Image-SFT`` / ``-Base`` (vendor, the UI defaults): a
-  repack DiT file already on disk wins (best precision for the requested
-  qtype; int8 only for convrot). Otherwise Base downloads the repack's bf16
-  (byte-identical to the vendor shards); SFT, which the repack has no bf16
-  of, downloads the vendor's diffusers shards once and merges them into
-  ``diffusion_models/moss_image_sft_bf16.safetensors`` in the Comfy layout.
+- ``OpenMOSS-Team/MOSS-Image-SFT`` / ``-Base`` (vendor, the UI defaults):
+  always bf16, quantized on load when requested; the repack's int8 is never
+  substituted. A bf16 DiT already on disk wins. Otherwise Base downloads the
+  repack's bf16 (byte-identical to the vendor shards); SFT, which the repack
+  has no bf16 of, downloads the vendor's diffusers shards once and merges them
+  into ``diffusion_models/moss_image_sft_bf16.safetensors`` in the Comfy layout.
   Other hub repos (fine-tunes) merge into a file named after the repo, never
   substituted.
 - ``Comfy-Org/MOSS-Image``: the repack's SFT DiT (int8 convrot only; a local
@@ -16,9 +16,9 @@ Comfy-Org/MOSS-Image repack (DiT: the vendor's keys with q/k/v fused).
 - ``org/repo/path/file.safetensors``: that file, downloaded to its comfy spot.
 
 The vendor text_encoder/ is stock Qwen3.5-9B (A_log / gated norm stored in
-bf16), so the text encoder is a comfy file: the repack's int8 convrot or
-Comfy-Org/Qwen3.5's bf16, whichever is local (ranked for the requested qtype),
-else the one matching the qtype is downloaded. The VAE is the shared FLUX.2
+bf16), so the text encoder is a comfy file: Comfy-Org/Qwen3.5's bf16 for the
+vendor ids; with ``Comfy-Org/MOSS-Image`` the repack's int8 convrot also counts
+(ranked for the requested qtype, local first). The VAE is the shared FLUX.2
 file: same encoder + BatchNorm stats as the vendor vae/ (which is the BFL
 weights rounded to bf16), full decoder in place of the small one. The
 tokenizer comes from the vendor repo.
@@ -120,8 +120,8 @@ def comfy_transformer_file(
     if variant is not None:
         repo_files, local_extra = COMFY_TRANSFORMER_FILES[variant]
         candidates = repo_files + local_extra
-        if repo_id != COMFY_REPO and not (qtype or "").lower().startswith("convrot"):
-            # int8 only stands in for the vendor bf16 when it attaches as-is
+        if repo_id != COMFY_REPO:
+            # the vendor ids default to bf16; int8 is opt-in via the repack id
             candidates = [c for c in candidates if "int8" not in c]
         found = resolve_comfy_candidates(
             candidates, repo_id=COMFY_REPO, local_only=True, qtype=qtype
@@ -174,16 +174,19 @@ def comfy_text_encoder_file(
     qtype: Optional[str] = None,
     hf_token: Optional[str] = None,
     status_fn: Optional[Callable[[str], None]] = None,
+    repo_id: Optional[str] = None,
 ) -> str:
-    rels = [rel for _, rel in COMFY_TEXT_ENCODER_FILES]
+    files = COMFY_TEXT_ENCODER_FILES
+    if repo_id != COMFY_REPO:
+        # the vendor ids default to bf16; int8 is opt-in via the repack id
+        files = [c for c in files if "int8" not in c[1]]
+    rels = [rel for _, rel in files]
     found = resolve_comfy_candidates(rels, repo_id=COMFY_REPO, local_only=True, qtype=qtype)
     if found is not None:
         return found
-    repo_id, rel = min(
-        COMFY_TEXT_ENCODER_FILES, key=lambda c: comfy_precision_rank(c[1], qtype=qtype)
-    )
+    te_repo, rel = min(files, key=lambda c: comfy_precision_rank(c[1], qtype=qtype))
     return resolve_comfy_candidates(
-        [rel], repo_id=repo_id, hf_token=hf_token, status_fn=status_fn
+        [rel], repo_id=te_repo, hf_token=hf_token, status_fn=status_fn
     )
 
 
