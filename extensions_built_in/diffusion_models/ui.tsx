@@ -2325,6 +2325,41 @@ export const AI_TOOLKIT_UI_MODELS: ModelArch[] = [
     additionalSections: ["model.low_vram", "model.layer_offloading"],
   },
   {
+    name: "fibo2",
+    label: "Fibo 2.0",
+    group: "image",
+    defaults: {
+      // default updates when [selected, unselected] in the UI
+      // gated repo: accept the license on the hub and set HF_TOKEN
+      "config.process[0].model.name_or_path": [
+        "briaai/Fibo-2.0-dev",
+        defaultNameOrPath,
+      ],
+      "config.process[0].model.quantize": [true, false],
+      "config.process[0].model.quantize_te": [true, false],
+      "config.process[0].model.low_vram": [true, false],
+      "config.process[0].train.unload_text_encoder": [false, false],
+      "config.process[0].sample.sampler": ["flowmatch", "flowmatch"],
+      "config.process[0].train.noise_scheduler": ["flowmatch", "flowmatch"],
+      "config.process[0].train.timestep_type": ["weighted", "sigmoid"],
+      "config.process[0].model.qtype": ["qfloat8", "qfloat8"],
+      "config.process[0].sample.width": [1024, 1024],
+      "config.process[0].sample.height": [1024, 1024],
+      // reference pipeline defaults
+      "config.process[0].sample.guidance_scale": [5, 4],
+      "config.process[0].sample.sample_steps": [30, 25],
+    },
+    modelNotes: (
+      <p>
+        <code>briaai/Fibo-2.0-dev</code> is gated: accept its license on
+        Hugging Face and set <code>HF_TOKEN</code>. Captions can be Fibo&apos;s
+        structured JSON captions or plain text.
+      </p>
+    ),
+    disableSections: ["network.conv"],
+    additionalSections: ["model.low_vram", "model.layer_offloading"],
+  },
+  {
     name: "flux2_klein_9b",
     label: "FLUX.2-klein-base-9B",
     group: "image",

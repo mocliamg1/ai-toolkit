@@ -65,6 +65,11 @@ MODEL_TESTS = {
         "model": {"name_or_path": "baidu/ERNIE-Image", "quantize": True, "quantize_te": True},
         "sample": {"width": 512, "height": 512, "num_inference_steps": 25, "guidance_scale": 4.0, "seed": 42},
     },
+    "fibo2": {
+        # gated repo: accept the license on the hub and set HF_TOKEN
+        "model": {"name_or_path": "briaai/Fibo-2.0-dev", "quantize": True, "quantize_te": True},
+        "sample": {"width": 512, "height": 512, "num_inference_steps": 20, "guidance_scale": 5.0, "seed": 42},
+    },
     "mageflow": {
         "model": {"name_or_path": "microsoft/Mage-Flow-Base", "quantize": True, "quantize_te": True},
         "sample": IMG,

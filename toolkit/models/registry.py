@@ -27,6 +27,7 @@ ARCH_REGISTRY: Dict[str, dict] = {
     "boogu_image": {"modality": "image", "model": {"name_or_path": "Boogu/Boogu-Image-0.1-Base", "quantize": True, "quantize_te": True}, "sample": dict(IMG)},
     "boogu_image_edit": {"modality": "image", "model": {"name_or_path": "Boogu/Boogu-Image-0.1-Edit", "quantize": True, "quantize_te": True}, "sample": dict(IMG), "needs_control_image": True},
     "ernie_image": {"modality": "image", "model": {"name_or_path": "baidu/ERNIE-Image", "quantize": True, "quantize_te": True}, "sample": dict(IMG)},
+    "fibo2": {"modality": "image", "model": {"name_or_path": "briaai/Fibo-2.0-dev", "quantize": True, "quantize_te": True}, "sample": {**IMG, "num_inference_steps": 30, "guidance_scale": 5.0}},
     "mageflow": {"modality": "image", "model": {"name_or_path": "microsoft/Mage-Flow-Base", "quantize": True, "quantize_te": True}, "sample": dict(IMG)},
     "mageflow_edit": {"modality": "image", "model": {"name_or_path": "microsoft/Mage-Flow-Edit", "quantize": True, "quantize_te": True}, "sample": dict(IMG), "needs_control_image": True},
     "ideogram4": {"modality": "image", "model": {"name_or_path": "ideogram-ai/ideogram-4-fp8", "quantize": True, "quantize_te": True}, "sample": dict(IMG)},
